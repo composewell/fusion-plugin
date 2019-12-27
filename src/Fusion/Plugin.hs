@@ -114,7 +114,7 @@ pass guts = do
         return (NonRec b expr')
 
     -- This is probably wrong, but we don't need it for now.
-    transformBind dflags anns bndr =
+    transformBind _ _ bndr =
         --putMsgS "Pickle Rick:\n"
         --mapM_ (\(b, expr) -> transformBind dflags anns (NonRec b expr)) bs
         --putMsgS "Pickle Rick ends\n"
