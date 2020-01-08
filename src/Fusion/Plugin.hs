@@ -6,26 +6,30 @@
 -- Maintainer  : pranaysashank@gmail.com
 -- Stability   : experimental
 -- Portability : GHC
-
--- Run plugin with option `-fplugin=Fusion.Plugin` together with `-O2`.
+--
+-- Run plugin with option @-fplugin=Fusion.Plugin@ together with @-O2@.
 --
 -- Plugin is currently very experimental and fragile, use it with care.
 --
 -- This plugin inlines non recursive join points whose definition
 -- begins with a case match on a type that is annotated with
--- ForceCaseCase. When everything goes well, this can fuse and
+-- ForceFusion. When everything goes well, this can fuse and
 -- completely eliminate intermediate constructors resulting in drastic
 -- performance gains. Here are some major improvements on a 143MB file:
 --
-{-
-| Benchmark Name                                    | Old    | New     |
-|---------------------------------------------------+--------+---------|
-| readStream/wordcount                              | 1.969s | 308.1ms |
-| decode-encode/utf8-arrays                         | 4.159s | 2.952s  |
-| decode-encode/utf8                                | 5.708s | 2.117s  |
-| splitting/predicate/wordsBy isSpace (word count)  | 2.050s | 311.5ms |
-| splitting/long-pattern/splitOnSuffixSeq abc...xyz | 2.558s | 423.3ms |
--}
+-- +---------------------------------------------------+--------+---------+
+-- | Benchmark Name                                    | Old    | New     |
+-- +===================================================+========+=========+
+-- | readStream/wordcount                              | 1.969s | 308.1ms |
+-- +---------------------------------------------------+--------+---------+
+-- | decode-encode/utf8-arrays                         | 4.159s | 2.952s  |
+-- +---------------------------------------------------+--------+---------+
+-- | decode-encode/utf8                                | 5.708s | 2.117s  |
+-- +---------------------------------------------------+--------+---------+
+-- | splitting/predicate/wordsBy isSpace (word count)  | 2.050s | 311.5ms |
+-- +---------------------------------------------------+--------+---------+
+-- | splitting/long-pattern/splitOnSuffixSeq abc...xyz | 2.558s | 423.3ms |
+-- +---------------------------------------------------+--------+---------+
 --
 -- The performance improvements suggest that this is something that
 -- would be nice to further pursue with a more principled approach
@@ -41,6 +45,9 @@
 -- and inline. This is not currently done, the machinery is already
 -- available, just create a loop breaker for Let Rec in
 -- `setInlineOnBndrs`.
+--
+
+{-# LANGUAGE CPP #-}
 
 module Fusion.Plugin
     ( plugin
@@ -62,6 +69,7 @@ plugin =
     defaultPlugin {installCoreToDos = install}
 
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
+#if MIN_VERSION_ghc(8,6,0)
 install _ todos = do
     dflags <- getDynFlags
     let myplugin = CoreDoPluginPass "Inline Join Points" pass
@@ -87,6 +95,11 @@ install _ todos = do
             0
             todos
             [myplugin, simplsimplify, myplugin, simplsimplify]
+#else
+install _ todos = do
+    putMsgS "Warning! Plugin isn't available on ghc <= 8.6."
+    return todos
+#endif
 
 -- Inserts the given list of 'CoreToDo' after the simplifier phase @n@.
 insertAfterSimplPhase :: Int -> [CoreToDo] -> [CoreToDo] -> [CoreToDo]
@@ -105,11 +118,11 @@ pass guts = do
     bindsOnlyPass (mapM (transformBind dflags anns)) guts
   where
     transformBind ::
-           DynFlags -> UniqFM [ForceCaseCase] -> CoreBind -> CoreM CoreBind
-    transformBind dflags anns bndr@(NonRec b expr) = do
+           DynFlags -> UniqFM [ForceFusion] -> CoreBind -> CoreM CoreBind
+    transformBind _ anns (NonRec b expr) = do
         --putMsgS $ "binding named " ++ showSDoc dflags (ppr b)
         let lets = DL.nub $ letBndrsThatAreCases (altsContainsAnn anns) expr
-        -- when (not $ null lets) $ putMsgS $ "Bndrs of required Case Alts\n" ++ showSDoc dflags (ppr $ map (\l -> (l, (uf_tmpl . unfoldingInfo . idInfo) l)) lets)
+        -- when (not $ null lets) $ putMsgS $ "Bndrs of required Case Alts\n" ++ showSDoc dflags (ppr lets)
         let expr' = setInlineOnBndrs lets expr
         return (NonRec b expr')
 
@@ -123,7 +136,7 @@ pass guts = do
 -- Checks whether a case alternative contains a type with the
 -- annotation.  Only checks the first typed element in the list, so
 -- only pass alternatives from one case expression.
-altsContainsAnn :: UniqFM [ForceCaseCase] -> [Alt CoreBndr] -> Bool
+altsContainsAnn :: UniqFM [ForceFusion] -> [Alt CoreBndr] -> Bool
 altsContainsAnn _ [] = False
 altsContainsAnn anns ((DataAlt dcon, _, _):_) =
     case lookupUFM anns (getUnique $ dataConTyCon dcon) of
@@ -141,39 +154,40 @@ altsContainsAnn _ _ = False
 -- This only concentrates on explicit Let's, doesn't care about top level
 -- Case or Lam or App.
 letBndrsThatAreCases :: ([Alt CoreBndr] -> Bool) -> CoreExpr -> [CoreBndr]
-letBndrsThatAreCases pred expr = letBndrsThatAreCases' undefined False expr
+letBndrsThatAreCases f expr = letBndrsThatAreCases' undefined False expr
   where
     letBndrsThatAreCases' :: CoreBndr -> Bool -> CoreExpr -> [CoreBndr]
     letBndrsThatAreCases' b _ (App expr1 expr2) =
         letBndrsThatAreCases' b False expr1 <>
         letBndrsThatAreCases' b False expr2
-    letBndrsThatAreCases' b x (Lam _ expr) =
-        letBndrsThatAreCases' b x expr
-    letBndrsThatAreCases' b _ (Let bndr expr) =
-        letBndrsFromBndr bndr <> letBndrsThatAreCases' b False expr
+    letBndrsThatAreCases' b x (Lam _ expr1) =
+        letBndrsThatAreCases' b x expr1
+    letBndrsThatAreCases' b _ (Let bndr expr1) =
+        letBndrsFromBndr bndr <> letBndrsThatAreCases' b False expr1
     letBndrsThatAreCases' b True (Case _ _ _ alts) =
-        if pred alts
+        if f alts
             then b :
                  (alts >>=
-                  (\(_, _, expr) -> letBndrsThatAreCases' undefined False expr))
+                  (\(_, _, expr1) -> letBndrsThatAreCases' undefined False expr1))
             else alts >>=
-                 (\(_, _, expr) -> letBndrsThatAreCases' undefined False expr)
+                 (\(_, _, expr1) -> letBndrsThatAreCases' undefined False expr1)
     letBndrsThatAreCases' b _ (Case _ _ _ alts) =
-        alts >>= (\(_, _, expr) -> letBndrsThatAreCases' b False expr)
-    letBndrsThatAreCases' b _ (Cast expr _) = letBndrsThatAreCases' b False expr
+        alts >>= (\(_, _, expr1) -> letBndrsThatAreCases' b False expr1)
+    letBndrsThatAreCases' b _ (Cast expr1 _) = letBndrsThatAreCases' b False expr1
     letBndrsThatAreCases' _ _ _ = []
+
     letBndrsFromBndr :: CoreBind -> [CoreBndr]
-    letBndrsFromBndr (NonRec b expr) = letBndrsThatAreCases' b True expr
+    letBndrsFromBndr (NonRec b expr1) = letBndrsThatAreCases' b True expr1
     letBndrsFromBndr (Rec bs) =
-        bs >>= (\(b, expr) -> letBndrsFromBndr $ NonRec b expr)
+        bs >>= (\(b, expr1) -> letBndrsFromBndr $ NonRec b expr1)
 
 --TODO: Replace self-recursive definitions with a loop breaker.
 setInlineOnBndrs :: [CoreBndr] -> CoreExpr -> CoreExpr
 setInlineOnBndrs bndrs = everywhere $ mkT go
   where
     go :: CoreExpr -> CoreExpr
-    go (Let (NonRec nn e) expr)
-        | any (nn ==) bndrs = Let (NonRec (setAlwaysInlineOnBndr nn) e) expr
+    go (Let (NonRec nn e) expr1)
+        | any (nn ==) bndrs = Let (NonRec (setAlwaysInlineOnBndr nn) e) expr1
     go x = x
 
 -- Sets the inline pragma on a bndr, and forgets the unfolding.

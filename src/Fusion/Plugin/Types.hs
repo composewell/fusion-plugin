@@ -10,18 +10,18 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 
 module Fusion.Plugin.Types
-    ( ForceCaseCase (..)
+    ( ForceFusion (..)
     )
 where
 
 import Data.Data
 
 
--- | 'ForceCaseCase' is used to inform the plugin to aggressively
+-- | 'ForceFusion' is used to inform the plugin to aggressively
 -- inline join points that perform a case match on a constructor. Use
 -- this annotation on the constructor when it is statically known that
 -- the elimination of the constructor would provide a significant
 -- performance boost.
-data ForceCaseCase =
-    ForceCaseCase
+data ForceFusion =
+    ForceFusion
     deriving (Data)

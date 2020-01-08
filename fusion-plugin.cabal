@@ -19,10 +19,11 @@ library
                        Fusion.Plugin
   build-depends:       base >= 4.0 && < 5.0
                      , syb  >= 0.7 && < 0.8
-                     , ghc  >= 8.0
+                     , ghc
   hs-source-dirs:      src
   ghc-options:         -Wall
-                       -Wcompat
+  if impl(ghc >= 8.0)
+    ghc-options:       -Wcompat
                        -Wunrecognised-warning-flags
                        -Widentities
                        -Wincomplete-uni-patterns
