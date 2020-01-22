@@ -7,50 +7,44 @@
 -- Stability   : experimental
 -- Portability : GHC
 --
--- Run plugin with option @-fplugin=Fusion.Plugin@ together with @-O2@.
+-- Stream fusion depends on the GHC case-of-case transformations eliminating
+-- intermediate constructors.  Case-of-case transformation in turn depends on
+-- inlining. During core-to-core transformations GHC may create several
+-- internal bindings (e.g. join points) which may not get inlined because their
+-- size is bigger than GHC's inlining threshold. Even though we know that after
+-- fusion the resulting code would be smaller and more efficient. The
+-- programmer cannot force inlining of these bindings as there is no way for
+-- the programmer to address these bindings at the source level because they
+-- are internal, generated during core-to-core transformations. As a result
+-- stream fusion fails unpredictably depending on whether GHC was able to
+-- inline the internal bindings or not.
 --
--- Plugin is currently very experimental and fragile, use it with care.
+-- [See GHC ticket #17075](https://gitlab.haskell.org/ghc/ghc/issues/17075) for
+-- more details.
 --
--- This plugin inlines non recursive join points whose definition
--- begins with a case match on a type that is annotated with
--- ForceFusion. When everything goes well, this can fuse and
--- completely eliminate intermediate constructors resulting in drastic
--- performance gains. Here are some major improvements on a 143MB file:
+-- This plugin provides the programmer with a way to annotate certain types
+-- using a custom 'ForceFusion' annotation. The programmer would annotate the
+-- types that are to be eliminated by fusion via case-of-case transformations.
+-- During the simplifier phase the plugin goes through the relevant bindings
+-- and if one of these types are found inside a binding then that binding is
+-- marked to be inlined irrespective of the size.
 --
--- +---------------------------------------------------+--------+---------+
--- | Benchmark Name                                    | Old    | New     |
--- +===================================================+========+=========+
--- | readStream/wordcount                              | 1.969s | 308.1ms |
--- +---------------------------------------------------+--------+---------+
--- | decode-encode/utf8-arrays                         | 4.159s | 2.952s  |
--- +---------------------------------------------------+--------+---------+
--- | decode-encode/utf8                                | 5.708s | 2.117s  |
--- +---------------------------------------------------+--------+---------+
--- | splitting/predicate/wordsBy isSpace (word count)  | 2.050s | 311.5ms |
--- +---------------------------------------------------+--------+---------+
--- | splitting/long-pattern/splitOnSuffixSeq abc...xyz | 2.558s | 423.3ms |
--- +---------------------------------------------------+--------+---------+
---
--- The performance improvements suggest that this is something that
--- would be nice to further pursue with a more principled approach
--- than present here.
---
--- This plugin currently runs after the simplifier runs phase 0
--- followed by a gentle simplify that does both inlining, and
--- case-case twice and then runs the rest of the CoreToDos. This
--- inlining could further create a recursive join point that does an
--- explicit case match on a type that would benefit again from
--- inlining, so in the second run we should create a loop breaker and
--- transform the recursive join point to a non-recursive join point
--- and inline. This is not currently done, the machinery is already
--- available, just create a loop breaker for Let Rec in
--- `setInlineOnBndrs`.
---
+-- At the right places, fusion can provide dramatic performance improvements
+-- (e.g. 10x) to the code.
 
 {-# LANGUAGE CPP #-}
 
 module Fusion.Plugin
-    ( plugin
+    (
+    -- * Using the Plugin
+    -- $using
+
+    -- * Implementation Details
+    -- $impl
+
+    -- * Results
+    -- $results
+      plugin
     )
 where
 
@@ -64,6 +58,45 @@ import qualified Data.List as DL
 
 import Fusion.Plugin.Types
 
+-- $using
+--
+-- This plugin was primarily motivated by fusion issues discovered in
+-- [streamly](https://github.com/composewell/streamly) but it can be used in
+-- general.
+--
+-- To use this plugin, add this package to your @build-depends@
+-- and pass the following to your ghc-options:
+--
+-- @
+-- ghc-options: -O2 -fplugin=Fusion.Plugin
+-- @
+
+-- $impl
+--
+-- The plugin runs after the simplifier phase 0. It finds all non recursive
+-- join point bindings whose definition begins with a case match on a type that
+-- is annotated with 'ForceFusion'. It then sets AlwaysInlinePragma on those
+-- bindings. This is followed by two runs of a gentle simplify pass that does
+-- both inlining and case-of-case. This is followed by the rest of CoreToDos.
+
+-- TODO:
+--
+-- This inlining could further create a recursive join point that does an
+-- explicit case match on a type that would benefit again from inlining, so in
+-- the second run we should create a loop breaker and transform the recursive
+-- join point to a non-recursive join point and inline. This is not currently
+-- done, the machinery is already available, just create a loop breaker for Let
+-- Rec in `setInlineOnBndrs`.
+
+-- $results
+--
+-- This plugin has been used extensively in the streaming library
+-- [streamly](https://github.com/composewell/streamly).  Several file IO
+-- benchmarks have shown 2x-6x improvements. With the use of this plugin stream
+-- fusion in streamly has become much more predictable which has been verified
+-- by inspecting the core generated by GHC and by inspection testing for the
+-- presence of the stream state constructors.
+--
 plugin :: Plugin
 plugin =
     defaultPlugin {installCoreToDos = install}

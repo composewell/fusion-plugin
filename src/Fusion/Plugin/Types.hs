@@ -17,11 +17,24 @@ where
 import Data.Data
 
 
--- | 'ForceFusion' is used to inform the plugin to aggressively
--- inline join points that perform a case match on a constructor. Use
--- this annotation on the constructor when it is statically known that
--- the elimination of the constructor would provide a significant
--- performance boost.
+-- | A GHC annotation to inform the plugin to aggressively inline join points
+-- that perform a case match on the constructors of the annotated type.
+-- Inlining enables case-of-case transformations that would potentially
+-- eliminate the constructors.
+--
+-- This annotation is to be used on types whose constructors are known to be
+-- involved in case-of-case transformations enabling stream fusion via
+-- elimination of those constructors.
+--
+-- It is advised to use unique types for intermediate stream state that is to
+-- be annotated by 'ForceFusion'. If the annotated type is also used for some
+-- other purpose this annotation may inline code that is not involved in stream
+-- fusion and should otherwise not be inlined.
+--
+-- @
+-- {-\# ANN type Step ForceFusion #-}
+-- data Step s a = Yield a s | Skip s | Stop
+-- @
 data ForceFusion =
     ForceFusion
     deriving (Data)

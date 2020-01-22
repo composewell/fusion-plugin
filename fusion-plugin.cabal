@@ -2,7 +2,7 @@ cabal-version:       2.2
 
 name:                fusion-plugin
 version:             0.1.0.0
-synopsis:            A plugin that tries to inline join points of interest
+synopsis:            GHC plugin to make stream fusion more predictable.
 -- description:
 homepage:            https://github.com/composewell/fusion-plugin
 bug-reports:         https://github.com/composewell/fusion-plugin/issues
