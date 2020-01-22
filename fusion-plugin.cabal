@@ -9,8 +9,8 @@ bug-reports:         https://github.com/composewell/fusion-plugin/issues
 license:             BSD-3-Clause
 license-file:        LICENSE
 author:              Pranay Sashank
-maintainer:          pranaysashank@gmail.com
-copyright:           Pranay Sashank
+maintainer:          pranaysashank@composewell.com
+copyright:           (c) 2019 Composewell Technologies
 category:            Development
 extra-source-files:  CHANGELOG.md
 

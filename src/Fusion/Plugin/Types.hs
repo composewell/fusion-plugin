@@ -1,9 +1,9 @@
 -- |
 -- Module      : Fusion.Plugin.Types
--- Copyright   : (c) 2019 Pranay Sashank
+-- Copyright   : (c) 2019 Composewell Technologies
 --
 -- License     : BSD-3-Clause
--- Maintainer  : pranaysashank@gmail.com
+-- Maintainer  : pranaysashank@composewell.com
 -- Stability   : experimental
 -- Portability : GHC
 
