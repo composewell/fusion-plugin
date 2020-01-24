@@ -49,6 +49,7 @@ module Fusion.Plugin
 where
 
 -- Explicit/qualified imports
+import Control.Monad (when)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
 
@@ -103,11 +104,15 @@ plugin :: Plugin
 plugin =
     defaultPlugin {installCoreToDos = install}
 
+data ReportMode = ReportSilent | ReportWarn | ReportVerbose
+
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 #if MIN_VERSION_ghc(8,6,0)
 install _ todos = do
     dflags <- getDynFlags
-    let myplugin = CoreDoPluginPass "Inline Join Points" pass
+    let doMarkInline opt failIt transform =
+            CoreDoPluginPass "Inline Join Points"
+                             (markInline opt failIt transform)
         simplsimplify =
             CoreDoSimplify
                 (maxSimplIterations dflags)
@@ -129,7 +134,12 @@ install _ todos = do
         insertAfterSimplPhase
             0
             todos
-            [myplugin, simplsimplify, myplugin, simplsimplify]
+            [ doMarkInline ReportSilent False True
+            , simplsimplify
+            , doMarkInline ReportSilent False True
+            , simplsimplify
+            , doMarkInline ReportWarn False False
+            ]
 #else
 install _ todos = do
     putMsgS "Warning! fusion-plugin does nothing on ghc versions prior to 8.6"
@@ -146,26 +156,40 @@ insertAfterSimplPhase i ctds todos' = go ctds
         | otherwise = todo : go todos
     go (todo:todos) = todo : go todos
 
-pass :: ModGuts -> CoreM ModGuts
-pass guts = do
+markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
+markInline reportMode failIt transform guts = do
     dflags <- getDynFlags
     anns <- getAnnotations deserializeWithData guts
     bindsOnlyPass (mapM (transformBind dflags anns)) guts
   where
     transformBind ::
            DynFlags -> UniqFM [ForceFusion] -> CoreBind -> CoreM CoreBind
-    transformBind _ anns (NonRec b expr) = do
-        --putMsgS $ "binding named " ++ showSDoc dflags (ppr b)
-        let lets = DL.nub $ letBndrsThatAreCases (altsContainsAnn anns) expr
-        -- when (not $ null lets) $ putMsgS $ "Bndrs of required Case Alts\n" ++ showSDoc dflags (ppr lets)
-        let expr' = setInlineOnBndrs lets expr
+    transformBind dflags anns (NonRec b expr) = do
+        let annotated = letBndrsThatAreCases (altsContainsAnn anns) expr
+        let uniqueAnns = DL.nub annotated
+
+        when (uniqueAnns /= []) $ do
+            -- XXX can we print the whole path leading up to this binder?
+            let msg = "In ["
+                      ++ showSDoc dflags (ppr b)
+                      ++ "] binders "
+                      ++ showSDoc dflags (ppr uniqueAnns)
+                      ++ " match on ForceFusion annotated types"
+            case reportMode of
+                ReportSilent -> return ()
+                ReportWarn -> putMsgS msg
+                ReportVerbose -> putMsgS msg
+            when failIt $ error "failing"
+
+        let expr' =
+                if transform
+                then setInlineOnBndrs uniqueAnns expr
+                else expr
         return (NonRec b expr')
 
-    -- This is probably wrong, but we don't need it for now.
     transformBind _ _ bndr =
-        --putMsgS "Pickle Rick:\n"
+        -- This is probably wrong, but we don't need it for now.
         --mapM_ (\(b, expr) -> transformBind dflags anns (NonRec b expr)) bs
-        --putMsgS "Pickle Rick ends\n"
         return bndr
 
 -- Checks whether a case alternative contains a type with the
