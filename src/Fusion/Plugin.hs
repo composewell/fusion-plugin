@@ -49,7 +49,7 @@ module Fusion.Plugin
 where
 
 import BasicTypes
-import GhcPlugins hiding ((<>))
+import GhcPlugins
 
 import Data.Generics.Schemes
 import Data.Generics.Aliases
@@ -191,12 +191,12 @@ letBndrsThatAreCases f expr = letBndrsThatAreCases' undefined False expr
   where
     letBndrsThatAreCases' :: CoreBndr -> Bool -> CoreExpr -> [CoreBndr]
     letBndrsThatAreCases' b _ (App expr1 expr2) =
-        letBndrsThatAreCases' b False expr1 <>
+        letBndrsThatAreCases' b False expr1 ++
         letBndrsThatAreCases' b False expr2
     letBndrsThatAreCases' b x (Lam _ expr1) =
         letBndrsThatAreCases' b x expr1
     letBndrsThatAreCases' b _ (Let bndr expr1) =
-        letBndrsFromBndr bndr <> letBndrsThatAreCases' b False expr1
+        letBndrsFromBndr bndr ++ letBndrsThatAreCases' b False expr1
     letBndrsThatAreCases' b True (Case _ _ _ alts) =
         if f alts
             then b :
