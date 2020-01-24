@@ -48,15 +48,17 @@ module Fusion.Plugin
     )
 where
 
-import BasicTypes
-import GhcPlugins
-
-import Data.Generics.Schemes
-import Data.Generics.Aliases
+-- Explicit/qualified imports
+import Data.Generics.Schemes (everywhere)
+import Data.Generics.Aliases (mkT)
 
 import qualified Data.List as DL
 
-import Fusion.Plugin.Types
+-- Implicit imports
+import GhcPlugins
+
+-- Imports from this package
+import Fusion.Plugin.Types (ForceFusion)
 
 -- $using
 --
@@ -130,7 +132,7 @@ install _ todos = do
             [myplugin, simplsimplify, myplugin, simplsimplify]
 #else
 install _ todos = do
-    putMsgS "Warning! Plugin isn't available on ghc <= 8.6."
+    putMsgS "Warning! fusion-plugin does nothing on ghc versions prior to 8.6"
     return todos
 #endif
 
