@@ -140,15 +140,15 @@ setInlineOnBndrs bndrs = everywhere $ mkT go
 -- Checks whether a case alternative contains a type with the
 -- annotation.  Only checks the first typed element in the list, so
 -- only pass alternatives from one case expression.
-
-altsContainsAnn :: UniqFM [ForceFusion] -> [Alt CoreBndr] -> Bool
-altsContainsAnn _ [] = False
-altsContainsAnn anns ((DataAlt dcon, _, _):_) =
+altsContainsAnn
+    :: UniqFM [ForceFusion] -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
+altsContainsAnn _ [] = Nothing
+altsContainsAnn anns (bndr@(DataAlt dcon, _, _):_) =
     case lookupUFM anns (getUnique $ dataConTyCon dcon) of
-        Nothing -> False
-        Just _ -> True
+        Nothing -> Nothing
+        Just _ -> Just bndr
 altsContainsAnn anns ((DEFAULT, _, _):alts) = altsContainsAnn anns alts
-altsContainsAnn _ _ = False
+altsContainsAnn _ _ = Nothing
 
 -------------------------------------------------------------------------------
 -- Determine if a let binder contains a case match on an annotated type
@@ -162,22 +162,26 @@ altsContainsAnn _ _ = False
 -- case-of-known constructor to kick in. Or is that not relevant?
 -- This only concentrates on explicit Let's, doesn't care about top level
 -- Case or Lam or App.
-letBndrsThatAreCases :: ([Alt CoreBndr] -> Bool) -> CoreExpr -> [CoreBndr]
+letBndrsThatAreCases
+    :: ([Alt CoreBndr] -> Maybe (Alt CoreBndr))
+    -> CoreExpr
+    -> [(CoreBndr, Alt CoreBndr)]
 letBndrsThatAreCases f expr = go undefined False expr
   where
-    go :: CoreBndr -> Bool -> CoreExpr -> [CoreBndr]
+    go :: CoreBndr -> Bool -> CoreExpr -> [(CoreBndr, Alt CoreBndr)]
     go b _ (App expr1 expr2) = go b False expr1 ++ go b False expr2
     go b x (Lam _ expr1) = go b x expr1
     go b _ (Let bndr expr1) = goLet bndr ++ go b False expr1
     go b True (Case _ _ _ alts) =
-        if f alts
-            then b : (alts >>= (\(_, _, expr1) -> go undefined False expr1))
-            else alts >>= (\(_, _, expr1) -> go undefined False expr1)
-    go b _ (Case _ _ _ alts) = alts >>= (\(_, _, expr1) -> go b False expr1)
+        let binders = alts >>= (\(_, _, expr1) -> go undefined False expr1)
+        in case f alts of
+            Just x -> (b, x) : binders
+            Nothing -> binders
+    go b False (Case _ _ _ alts) = alts >>= (\(_, _, expr1) -> go b False expr1)
     go b _ (Cast expr1 _) = go b False expr1
     go _ _ _ = []
 
-    goLet :: CoreBind -> [CoreBndr]
+    goLet :: CoreBind -> [(CoreBndr, Alt CoreBndr)]
     goLet (NonRec b expr1) = go b True expr1
     goLet (Rec bs) = bs >>= (\(b, expr1) -> goLet $ NonRec b expr1)
 
@@ -199,20 +203,29 @@ markInline reportMode failIt transform guts = do
            DynFlags -> UniqFM [ForceFusion] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns (NonRec b expr) = do
         let annotated = letBndrsThatAreCases (altsContainsAnn anns) expr
-        let uniqueAnns = DL.nub annotated
+        let uniqueAnns = DL.nub (map fst annotated)
 
+        -- XXX we can possibly have a FUSE_DEBUG annotation to print verbose
+        -- messages only for a given type.
         when (uniqueAnns /= []) $ do
             -- XXX can we print the whole path leading up to this binder?
-            let msg = "In ["
+            let showDetails (name, c@(con,_,_)) =
+                    showSDoc dflags (ppr name) ++ ": " ++
+                        case reportMode of
+                            ReportWarn -> showSDoc dflags (ppr con)
+                            ReportVerbose -> showSDoc dflags (ppr c)
+                            _ -> error "transformBind: unreachable"
+            let msg = "In "
                       ++ showSDoc dflags (ppr b)
-                      ++ "] binders "
+                      ++ " binders "
                       ++ showSDoc dflags (ppr uniqueAnns)
-                      ++ " scrutinize constructors marked with "
+                      ++ " scrutinize data types annotated with "
                       ++ showSDoc dflags (ppr ForceFusion)
             case reportMode of
                 ReportSilent -> return ()
-                ReportWarn -> putMsgS msg
-                ReportVerbose -> putMsgS msg
+                _ -> do
+                    putMsgS msg
+                    putMsgS $ DL.unlines $ map showDetails annotated
             when failIt $ error "failing"
 
         let expr' =
