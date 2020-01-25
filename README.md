@@ -32,7 +32,7 @@ more details.
 ## Solution
 
 This plugin provides the programmer with a way to annotate certain types
-using a `ForceFusion` pragma. The programmer would annotate the types that are
+using a `Fuse` pragma. The programmer would annotate the types that are
 to be eliminated by fusion. During the simplifier phase the plugin goes through
 the relevant bindings and if one of these types are found inside a binding then
 that binding is marked to be inlined irrespective of the size.

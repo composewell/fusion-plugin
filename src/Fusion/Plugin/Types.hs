@@ -10,7 +10,7 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 
 module Fusion.Plugin.Types
-    ( ForceFusion (..)
+    ( Fuse (..)
     )
 where
 
@@ -27,17 +27,16 @@ import Outputable (Outputable(..), text)
 -- elimination of those constructors.
 --
 -- It is advised to use unique types for intermediate stream state that is to
--- be annotated by 'ForceFusion'. If the annotated type is also used for some
+-- be annotated with 'Fuse'. If the annotated type is also used for some
 -- other purpose this annotation may inline code that is not involved in stream
 -- fusion and should otherwise not be inlined.
 --
 -- @
--- {-\# ANN type Step ForceFusion #-}
+-- {-\# ANN type Step Fuse #-}
 -- data Step s a = Yield a s | Skip s | Stop
 -- @
-data ForceFusion =
-    ForceFusion
+data Fuse = Fuse
     deriving (Eq, Data)
 
-instance Outputable ForceFusion where
-    ppr _ = text "ForceFusion"
+instance Outputable Fuse where
+    ppr _ = text "Fuse"

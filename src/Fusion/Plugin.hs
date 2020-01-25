@@ -23,7 +23,7 @@
 -- more details.
 --
 -- This plugin provides the programmer with a way to annotate certain types
--- using a custom 'ForceFusion' annotation. The programmer would annotate the
+-- using a custom 'Fuse' annotation. The programmer would annotate the
 -- types that are to be eliminated by fusion via case-of-case transformations.
 -- During the simplifier phase the plugin goes through the relevant bindings
 -- and if one of these types are found inside a binding then that binding is
@@ -59,7 +59,7 @@ import qualified Data.List as DL
 import GhcPlugins
 
 -- Imports from this package
-import Fusion.Plugin.Types (ForceFusion(..))
+import Fusion.Plugin.Types (Fuse(..))
 
 -- $using
 --
@@ -78,7 +78,7 @@ import Fusion.Plugin.Types (ForceFusion(..))
 --
 -- The plugin runs after the simplifier phase 0. It finds all non recursive
 -- join point bindings whose definition begins with a case match on a type that
--- is annotated with 'ForceFusion'. It then sets AlwaysInlinePragma on those
+-- is annotated with 'Fuse'. It then sets AlwaysInlinePragma on those
 -- bindings. This is followed by two runs of a gentle simplify pass that does
 -- both inlining and case-of-case. This is followed by the rest of CoreToDos.
 
@@ -140,8 +140,7 @@ setInlineOnBndrs bndrs = everywhere $ mkT go
 -- Checks whether a case alternative contains a type with the
 -- annotation.  Only checks the first typed element in the list, so
 -- only pass alternatives from one case expression.
-altsContainsAnn
-    :: UniqFM [ForceFusion] -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
+altsContainsAnn :: UniqFM [Fuse] -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
 altsContainsAnn _ [] = Nothing
 altsContainsAnn anns (bndr@(DataAlt dcon, _, _):_) =
     case lookupUFM anns (getUnique $ dataConTyCon dcon) of
@@ -236,7 +235,7 @@ showInfo parent dflags reportMode failIt uniqBinders annotated =
                   ++ " binders "
                   ++ showSDoc dflags (ppr uniqBinders)
                   ++ " scrutinize data types annotated with "
-                  ++ showSDoc dflags (ppr ForceFusion)
+                  ++ showSDoc dflags (ppr Fuse)
         case reportMode of
             ReportSilent -> return ()
             _ -> do
@@ -248,12 +247,11 @@ markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline reportMode failIt transform guts = do
     dflags <- getDynFlags
     anns <- getAnnotations deserializeWithData guts
-    if (anyUFM (any (== ForceFusion)) anns)
+    if (anyUFM (any (== Fuse)) anns)
     then bindsOnlyPass (mapM (transformBind dflags anns)) guts
     else return guts
   where
-    transformBind ::
-           DynFlags -> UniqFM [ForceFusion] -> CoreBind -> CoreM CoreBind
+    transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns (NonRec b expr) = do
         let annotated = letBndrsThatAreCases (altsContainsAnn anns) expr
         let uniqBinders = DL.nub (map (getNonRecBinder. head . fst) annotated)
