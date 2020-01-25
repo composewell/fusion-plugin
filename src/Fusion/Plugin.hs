@@ -163,32 +163,23 @@ altsContainsAnn _ _ = False
 -- This only concentrates on explicit Let's, doesn't care about top level
 -- Case or Lam or App.
 letBndrsThatAreCases :: ([Alt CoreBndr] -> Bool) -> CoreExpr -> [CoreBndr]
-letBndrsThatAreCases f expr = letBndrsThatAreCases' undefined False expr
+letBndrsThatAreCases f expr = go undefined False expr
   where
-    letBndrsThatAreCases' :: CoreBndr -> Bool -> CoreExpr -> [CoreBndr]
-    letBndrsThatAreCases' b _ (App expr1 expr2) =
-        letBndrsThatAreCases' b False expr1 ++
-        letBndrsThatAreCases' b False expr2
-    letBndrsThatAreCases' b x (Lam _ expr1) =
-        letBndrsThatAreCases' b x expr1
-    letBndrsThatAreCases' b _ (Let bndr expr1) =
-        letBndrsFromBndr bndr ++ letBndrsThatAreCases' b False expr1
-    letBndrsThatAreCases' b True (Case _ _ _ alts) =
+    go :: CoreBndr -> Bool -> CoreExpr -> [CoreBndr]
+    go b _ (App expr1 expr2) = go b False expr1 ++ go b False expr2
+    go b x (Lam _ expr1) = go b x expr1
+    go b _ (Let bndr expr1) = goLet bndr ++ go b False expr1
+    go b True (Case _ _ _ alts) =
         if f alts
-            then b :
-                 (alts >>=
-                  (\(_, _, expr1) -> letBndrsThatAreCases' undefined False expr1))
-            else alts >>=
-                 (\(_, _, expr1) -> letBndrsThatAreCases' undefined False expr1)
-    letBndrsThatAreCases' b _ (Case _ _ _ alts) =
-        alts >>= (\(_, _, expr1) -> letBndrsThatAreCases' b False expr1)
-    letBndrsThatAreCases' b _ (Cast expr1 _) = letBndrsThatAreCases' b False expr1
-    letBndrsThatAreCases' _ _ _ = []
+            then b : (alts >>= (\(_, _, expr1) -> go undefined False expr1))
+            else alts >>= (\(_, _, expr1) -> go undefined False expr1)
+    go b _ (Case _ _ _ alts) = alts >>= (\(_, _, expr1) -> go b False expr1)
+    go b _ (Cast expr1 _) = go b False expr1
+    go _ _ _ = []
 
-    letBndrsFromBndr :: CoreBind -> [CoreBndr]
-    letBndrsFromBndr (NonRec b expr1) = letBndrsThatAreCases' b True expr1
-    letBndrsFromBndr (Rec bs) =
-        bs >>= (\(b, expr1) -> letBndrsFromBndr $ NonRec b expr1)
+    goLet :: CoreBind -> [CoreBndr]
+    goLet (NonRec b expr1) = go b True expr1
+    goLet (Rec bs) = bs >>= (\(b, expr1) -> goLet $ NonRec b expr1)
 
 -------------------------------------------------------------------------------
 -- Core-to-core pass to mark interesting binders to be always inlined
