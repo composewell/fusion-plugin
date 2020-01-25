@@ -165,31 +165,33 @@ altsContainsAnn _ _ = Nothing
 letBndrsThatAreCases
     :: ([Alt CoreBndr] -> Maybe (Alt CoreBndr))
     -> CoreExpr
-    -> [(CoreBndr, Alt CoreBndr)]
-letBndrsThatAreCases f expr = go undefined False expr
+    -> [([CoreBind], Alt CoreBndr)]
+letBndrsThatAreCases f expr = go [] False expr
   where
-    go :: CoreBndr -> Bool -> CoreExpr -> [(CoreBndr, Alt CoreBndr)]
+    go :: [CoreBind] -> Bool -> CoreExpr
+            -> [([CoreBind], Alt CoreBndr)]
     go b _ (App expr1 expr2) = go b False expr1 ++ go b False expr2
     go b x (Lam _ expr1) = go b x expr1
-    go b _ (Let bndr expr1) = goLet bndr ++ go b False expr1
+    go b _ (Let bndr expr1) = goLet b bndr ++ go b False expr1
     go b True (Case _ _ _ alts) =
         let binders = alts >>= (\(_, _, expr1) -> go undefined False expr1)
         in case f alts of
             Just x -> (b, x) : binders
             Nothing -> binders
-    go b False (Case _ _ _ alts) = alts >>= (\(_, _, expr1) -> go b False expr1)
+    go b False (Case _ _ _ alts) =
+        alts >>= (\(_, _, expr1) -> go b False expr1)
     go b _ (Cast expr1 _) = go b False expr1
     go _ _ _ = []
 
-    goLet :: CoreBind -> [(CoreBndr, Alt CoreBndr)]
-    goLet (NonRec b expr1) = go b True expr1
-    goLet (Rec bs) = bs >>= (\(b, expr1) -> goLet $ NonRec b expr1)
+    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Alt CoreBndr)]
+    goLet path bndr@(NonRec _ expr1) = go (bndr : path) True expr1
+    goLet path (Rec bs) = bs >>= (\(b, expr1) -> goLet path $ NonRec b expr1)
 
 -------------------------------------------------------------------------------
 -- Core-to-core pass to mark interesting binders to be always inlined
 -------------------------------------------------------------------------------
 
-data ReportMode = ReportSilent | ReportWarn | ReportVerbose
+data ReportMode = ReportSilent | ReportWarn | ReportVerbose | ReportVerbose2
 
 markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline reportMode failIt transform guts = do
@@ -199,21 +201,36 @@ markInline reportMode failIt transform guts = do
     then bindsOnlyPass (mapM (transformBind dflags anns)) guts
     else return guts
   where
+    getNonRecBinder (NonRec b _) = b
+    getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
+    -- getBinders = map getNonRecBinder
+
     transformBind ::
            DynFlags -> UniqFM [ForceFusion] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns (NonRec b expr) = do
         let annotated = letBndrsThatAreCases (altsContainsAnn anns) expr
-        let uniqueAnns = DL.nub (map fst annotated)
+        let uniqueAnns = DL.nub (map (getNonRecBinder. head . fst) annotated)
 
         -- XXX we can possibly have a FUSE_DEBUG annotation to print verbose
         -- messages only for a given type.
+        --
+        -- XXX we mark certain functions (e.g. toStreamK) with a NOFUSION
+        -- annotation so that we do not report them.
+        --
         when (uniqueAnns /= []) $ do
             -- XXX can we print the whole path leading up to this binder?
-            let showDetails (name, c@(con,_,_)) =
-                    showSDoc dflags (ppr name) ++ ": " ++
+            let showDetails (binds, c@(con,_,_)) =
+                    let path = DL.intercalate "/"
+                            $ reverse
+                            $ map (showSDoc dflags . ppr)
+                            $ map getNonRecBinder binds
+                    -- showSDoc dflags (ppr name) ++ ": " ++
+                    in path ++ ": " ++
                         case reportMode of
                             ReportWarn -> showSDoc dflags (ppr con)
                             ReportVerbose -> showSDoc dflags (ppr c)
+                            ReportVerbose2 ->
+                                showSDoc dflags (ppr $ head binds)
                             _ -> error "transformBind: unreachable"
             let msg = "In "
                       ++ showSDoc dflags (ppr b)
