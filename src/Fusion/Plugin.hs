@@ -59,7 +59,7 @@ import qualified Data.List as DL
 import GhcPlugins
 
 -- Imports from this package
-import Fusion.Plugin.Types (ForceFusion)
+import Fusion.Plugin.Types (ForceFusion(..))
 
 -- $using
 --
@@ -137,7 +137,7 @@ setInlineOnBndrs bndrs = everywhere $ mkT go
 -- Inspect case alternatives for interesting constructor matches
 -------------------------------------------------------------------------------
 
--- | Checks whether a case alternative contains a type with the
+-- Checks whether a case alternative contains a type with the
 -- annotation.  Only checks the first typed element in the list, so
 -- only pass alternatives from one case expression.
 
@@ -205,7 +205,8 @@ markInline reportMode failIt transform guts = do
                       ++ showSDoc dflags (ppr b)
                       ++ "] binders "
                       ++ showSDoc dflags (ppr uniqueAnns)
-                      ++ " match on ForceFusion annotated types"
+                      ++ " scrutinize constructors marked with "
+                      ++ showSDoc dflags (ppr ForceFusion)
             case reportMode of
                 ReportSilent -> return ()
                 ReportWarn -> putMsgS msg

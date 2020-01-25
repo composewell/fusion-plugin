@@ -14,8 +14,8 @@ module Fusion.Plugin.Types
     )
 where
 
-import Data.Data
-
+import Data.Data (Data)
+import Outputable (Outputable(..), text)
 
 -- | A GHC annotation to inform the plugin to aggressively inline join points
 -- that perform a case match on the constructors of the annotated type.
@@ -38,3 +38,6 @@ import Data.Data
 data ForceFusion =
     ForceFusion
     deriving (Data)
+
+instance Outputable ForceFusion where
+    ppr _ = text "ForceFusion"
