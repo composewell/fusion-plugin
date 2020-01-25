@@ -191,7 +191,9 @@ markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline reportMode failIt transform guts = do
     dflags <- getDynFlags
     anns <- getAnnotations deserializeWithData guts
-    bindsOnlyPass (mapM (transformBind dflags anns)) guts
+    if (anyUFM (any (== ForceFusion)) anns)
+    then bindsOnlyPass (mapM (transformBind dflags anns)) guts
+    else return guts
   where
     transformBind ::
            DynFlags -> UniqFM [ForceFusion] -> CoreBind -> CoreM CoreBind

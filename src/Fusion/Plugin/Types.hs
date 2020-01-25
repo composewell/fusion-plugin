@@ -37,7 +37,7 @@ import Outputable (Outputable(..), text)
 -- @
 data ForceFusion =
     ForceFusion
-    deriving (Data)
+    deriving (Eq, Data)
 
 instance Outputable ForceFusion where
     ppr _ = text "ForceFusion"
