@@ -162,6 +162,10 @@ altsContainsAnn _ _ = Nothing
 -- case-of-known constructor to kick in. Or is that not relevant?
 -- This only concentrates on explicit Let's, doesn't care about top level
 -- Case or Lam or App.
+--
+-- Returns all the binds in the hierarchy from the parent to the bind
+-- containing the case alternative as well as the case alternative scrutinizing
+-- the annotated type.
 letBndrsThatAreCases
     :: ([Alt CoreBndr] -> Maybe (Alt CoreBndr))
     -> CoreExpr
@@ -193,6 +197,53 @@ letBndrsThatAreCases f expr = go [] False expr
 
 data ReportMode = ReportSilent | ReportWarn | ReportVerbose | ReportVerbose2
 
+getNonRecBinder :: CoreBind -> CoreBndr
+getNonRecBinder (NonRec b _) = b
+getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
+
+-- XXX we can possibly have a FUSE_DEBUG annotation to print verbose
+-- messages only for a given type.
+--
+-- XXX we mark certain functions (e.g. toStreamK) with a NOFUSION
+-- annotation so that we do not report them.
+
+showInfo
+    :: CoreBndr
+    -> DynFlags
+    -> ReportMode
+    -> Bool
+    -> [CoreBndr]
+    -> [([CoreBind], Alt CoreBndr)]
+    -> CoreM ()
+showInfo parent dflags reportMode failIt uniqBinders annotated =
+    when (uniqBinders /= []) $ do
+        -- XXX can we print the whole path leading up to this binder?
+        let showDetails (binds, c@(con,_,_)) =
+                let path = DL.intercalate "/"
+                        $ reverse
+                        $ map (showSDoc dflags . ppr)
+                        $ map getNonRecBinder binds
+                -- showSDoc dflags (ppr name) ++ ": " ++
+                in path ++ ": " ++
+                    case reportMode of
+                        ReportWarn -> showSDoc dflags (ppr con)
+                        ReportVerbose -> showSDoc dflags (ppr c)
+                        ReportVerbose2 ->
+                            showSDoc dflags (ppr $ head binds)
+                        _ -> error "transformBind: unreachable"
+        let msg = "In "
+                  ++ showSDoc dflags (ppr parent)
+                  ++ " binders "
+                  ++ showSDoc dflags (ppr uniqBinders)
+                  ++ " scrutinize data types annotated with "
+                  ++ showSDoc dflags (ppr ForceFusion)
+        case reportMode of
+            ReportSilent -> return ()
+            _ -> do
+                putMsgS msg
+                putMsgS $ DL.unlines $ map showDetails annotated
+        when failIt $ error "failing"
+
 markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline reportMode failIt transform guts = do
     dflags <- getDynFlags
@@ -201,53 +252,18 @@ markInline reportMode failIt transform guts = do
     then bindsOnlyPass (mapM (transformBind dflags anns)) guts
     else return guts
   where
-    getNonRecBinder (NonRec b _) = b
-    getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
-    -- getBinders = map getNonRecBinder
-
     transformBind ::
            DynFlags -> UniqFM [ForceFusion] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns (NonRec b expr) = do
         let annotated = letBndrsThatAreCases (altsContainsAnn anns) expr
-        let uniqueAnns = DL.nub (map (getNonRecBinder. head . fst) annotated)
+        let uniqBinders = DL.nub (map (getNonRecBinder. head . fst) annotated)
 
-        -- XXX we can possibly have a FUSE_DEBUG annotation to print verbose
-        -- messages only for a given type.
-        --
-        -- XXX we mark certain functions (e.g. toStreamK) with a NOFUSION
-        -- annotation so that we do not report them.
-        --
-        when (uniqueAnns /= []) $ do
-            -- XXX can we print the whole path leading up to this binder?
-            let showDetails (binds, c@(con,_,_)) =
-                    let path = DL.intercalate "/"
-                            $ reverse
-                            $ map (showSDoc dflags . ppr)
-                            $ map getNonRecBinder binds
-                    -- showSDoc dflags (ppr name) ++ ": " ++
-                    in path ++ ": " ++
-                        case reportMode of
-                            ReportWarn -> showSDoc dflags (ppr con)
-                            ReportVerbose -> showSDoc dflags (ppr c)
-                            ReportVerbose2 ->
-                                showSDoc dflags (ppr $ head binds)
-                            _ -> error "transformBind: unreachable"
-            let msg = "In "
-                      ++ showSDoc dflags (ppr b)
-                      ++ " binders "
-                      ++ showSDoc dflags (ppr uniqueAnns)
-                      ++ " scrutinize data types annotated with "
-                      ++ showSDoc dflags (ppr ForceFusion)
-            case reportMode of
-                ReportSilent -> return ()
-                _ -> do
-                    putMsgS msg
-                    putMsgS $ DL.unlines $ map showDetails annotated
-            when failIt $ error "failing"
+        when (uniqBinders /= []) $
+            showInfo b dflags reportMode failIt uniqBinders annotated
 
         let expr' =
                 if transform
-                then setInlineOnBndrs uniqueAnns expr
+                then setInlineOnBndrs uniqBinders expr
                 else expr
         return (NonRec b expr')
 
