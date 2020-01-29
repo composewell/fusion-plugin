@@ -216,13 +216,11 @@ showInfo
     -> CoreM ()
 showInfo parent dflags reportMode failIt uniqBinders annotated =
     when (uniqBinders /= []) $ do
-        -- XXX can we print the whole path leading up to this binder?
         let showDetails (binds, c@(con,_,_)) =
                 let path = DL.intercalate "/"
                         $ reverse
                         $ map (showSDoc dflags . ppr)
                         $ map getNonRecBinder binds
-                -- showSDoc dflags (ppr name) ++ ": " ++
                 in path ++ ": " ++
                     case reportMode of
                         ReportWarn -> showSDoc dflags (ppr con)
@@ -305,9 +303,13 @@ install _ todos = do
                     }
     -- We run our plugin once the simplifier finishes phase 0,
     -- followed by a gentle simplifier which inlines and case-cases
-    -- twice. TODO: The gentle simplifier runs on the whole program,
+    -- twice.
+    --
+    -- TODO: The gentle simplifier runs on the whole program,
     -- however it might be better to call `simplifyExpr` on the
     -- expression directly.
+    --
+    -- TODO do not run simplify if we did not do anything in markInline phase.
     return $
         insertAfterSimplPhase
             0
