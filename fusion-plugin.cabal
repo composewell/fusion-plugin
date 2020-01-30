@@ -1,13 +1,24 @@
 cabal-version:       2.2
 
 name:                fusion-plugin
-version:             0.1.0.0
+version:             0.1.0
 synopsis:            GHC plugin to make stream fusion more predictable.
--- description:
+description:
+  This plugin provides the programmer with a way to annotate certain
+  types using a 'Fuse' pragma. The programmer would annotate the types
+  that are to be eliminated by fusion. During the simplifier phase the
+  plugin goes through the relevant bindings and if one of these types
+  are found inside a binding then that binding is marked to be inlined
+  irrespective of the size.
+  .
+  This plugin was primarily motivated by
+  <https://hackage.haskell.org/package/streamly streamly> but it can
+  be used in general.
 homepage:            https://github.com/composewell/fusion-plugin
 bug-reports:         https://github.com/composewell/fusion-plugin/issues
 license:             BSD-3-Clause
 license-file:        LICENSE
+tested-with:         GHC==8.6.3, GHC==8.8.1
 author:              Pranay Sashank
 maintainer:          pranaysashank@composewell.com
 copyright:           (c) 2019 Composewell Technologies
