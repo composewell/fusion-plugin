@@ -4,7 +4,7 @@ on: [push, pull_request]
 
 jobs:
   build:
-    name: GHC ${{ matrix.ghc_version }}
+    name: GHC ${{ matrix.ghc_version }} ${{ matrix.os }}
     env:
       CABAL_REINIT_CONFIG: y
       LC_ALL: C.UTF-8
@@ -18,19 +18,20 @@ jobs:
       CABAL_HACKAGE_MIRROR: hackage.haskell.org:http://hackage.fpcomplete.com
 
       PACKCHECK_LOCAL_PATH: "./packcheck.sh"
-      PACKCHECK_GITHUB_URL: "https://raw.githubusercontent.com/harendra-kumar/packcheck"
+      PACKCHECK_GITHUB_URL: "https://raw.githubusercontent.com/composewell/packcheck"
       PACKCHECK_GITHUB_COMMIT: "d11a8a68fef00f4932bbedd6134950495ccd7420"
 
       BUILD: ${{ matrix.build }}
       GHCVER: ${{ matrix.ghc_version }}
       CABAL_BUILD_OPTIONS: ${{ matrix.cabal_build_options }}
 
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         ghc_version: [8.6.5, 8.8.1]
         cabal_version: ["3.0"]
+        os: [ubuntu-18.04]
         include:
           - ghc_version: 8.8.1
             build: cabal-v2
