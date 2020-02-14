@@ -32,6 +32,7 @@
 -- At the right places, fusion can provide dramatic performance improvements
 -- (e.g. 10x) to the code.
 
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# LANGUAGE CPP #-}
 
 module Fusion.Plugin
@@ -52,6 +53,7 @@ where
 import Control.Monad (when)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
+import Outputable (Outputable(..), text)
 
 import qualified Data.List as DL
 
@@ -330,3 +332,7 @@ install _ todos = do
 
 plugin :: Plugin
 plugin = defaultPlugin {installCoreToDos = install}
+
+-- Orphan instance for 'Fuse'
+instance Outputable Fuse where
+    ppr _ = text "Fuse"
