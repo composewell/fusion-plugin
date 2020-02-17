@@ -1,7 +1,7 @@
 cabal-version:       2.2
 
 name:                fusion-plugin
-version:             0.1.1
+version:             1.0.0
 synopsis:            GHC plugin to make stream fusion more predictable.
 description:
   This plugin provides the programmer with a way to annotate certain
@@ -25,6 +25,7 @@ copyright:           (c) 2019 Composewell Technologies
 category:            Development
 extra-source-files:  CHANGELOG.md
                      README.md
+                     stack.yaml
 
 source-repository head
     type: git
