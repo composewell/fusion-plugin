@@ -31,11 +31,14 @@ more details.
 
 ## Solution
 
-This plugin provides the programmer with a way to annotate certain types
-using a `Fuse` pragma. The programmer would annotate the types that are
-to be eliminated by fusion. During the simplifier phase the plugin goes through
-the relevant bindings and if one of these types are found inside a binding then
-that binding is marked to be inlined irrespective of the size.
+This plugin provides the programmer with a way to annotate certain
+types using a `Fuse` pragma from the
+[fusion-plugin-types](https://hackage.haskell.org/package/fusion-plugin-types)
+package. The programmer would annotate the types that are to be
+eliminated by fusion. During the simplifier phase the plugin goes
+through the relevant bindings and if one of these types are found
+inside a binding then that binding is marked to be inlined
+irrespective of the size.
 
 ## Using the plugin
 
@@ -46,6 +49,13 @@ general.
 To use this plugin, add this package to your `build-depends`
 and pass the following to your ghc-options: `ghc-options: -O2
 -fplugin=Fusion.Plugin`
+
+## See also
+
+If you are a library author looking to annotate the types, you need to
+use the
+[fusion-plugin-types](https://hackage.haskell.org/package/fusion-plugin-types)
+package.
 
 ## Contributing
 
