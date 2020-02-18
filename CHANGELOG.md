@@ -1,4 +1,4 @@
-## 1.0.0
+## 0.2.0
 
 ### Breaking Change
 - Fusion.Plugin.Types is no longer exported from this package. If you
