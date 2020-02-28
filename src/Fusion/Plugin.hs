@@ -129,12 +129,12 @@ setAlwaysInlineOnBndr n =
      in lazySetIdInfo n info'
 
 --TODO: Replace self-recursive definitions with a loop breaker.
-setInlineOnBndrs :: [CoreBndr] -> CoreExpr -> CoreExpr
+setInlineOnBndrs :: [CoreBndr] -> CoreBind -> CoreBind
 setInlineOnBndrs bndrs = everywhere $ mkT go
   where
-    go :: CoreExpr -> CoreExpr
-    go (Let (NonRec nn e) expr1)
-        | any (nn ==) bndrs = Let (NonRec (setAlwaysInlineOnBndr nn) e) expr1
+    go :: CoreBind -> CoreBind
+    go (NonRec nn expr1)
+        | any (nn ==) bndrs = NonRec (setAlwaysInlineOnBndr nn) expr1
     go x = x
 
 -------------------------------------------------------------------------------
@@ -171,9 +171,9 @@ altsContainsAnn _ _ = Nothing
 -- the annotated type.
 letBndrsThatAreCases
     :: ([Alt CoreBndr] -> Maybe (Alt CoreBndr))
-    -> CoreExpr
+    -> CoreBind
     -> [([CoreBind], Alt CoreBndr)]
-letBndrsThatAreCases f expr = go [] False expr
+letBndrsThatAreCases f bind = goLet [] bind
   where
     go :: [CoreBind] -> Bool -> CoreExpr
             -> [([CoreBind], Alt CoreBndr)]
@@ -181,7 +181,7 @@ letBndrsThatAreCases f expr = go [] False expr
     go b x (Lam _ expr1) = go b x expr1
     go b _ (Let bndr expr1) = goLet b bndr ++ go b False expr1
     go b True (Case _ _ _ alts) =
-        let binders = alts >>= (\(_, _, expr1) -> go undefined False expr1)
+        let binders = alts >>= (\(_, _, expr1) -> go b False expr1)
         in case f alts of
             Just x -> (b, x) : binders
             Nothing -> binders
@@ -254,18 +254,18 @@ markInline reportMode failIt transform guts = do
     else return guts
   where
     transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
-    transformBind dflags anns (NonRec b expr) = do
-        let annotated = letBndrsThatAreCases (altsContainsAnn anns) expr
+    transformBind dflags anns bind@(NonRec b _) = do
+        let annotated = letBndrsThatAreCases (altsContainsAnn anns) bind
         let uniqBinders = DL.nub (map (getNonRecBinder. head . fst) annotated)
 
         when (uniqBinders /= []) $
             showInfo b dflags reportMode failIt uniqBinders annotated
 
-        let expr' =
+        let bind' =
                 if transform
-                then setInlineOnBndrs uniqBinders expr
-                else expr
-        return (NonRec b expr')
+                then setInlineOnBndrs uniqBinders bind
+                else bind
+        return bind'
 
     transformBind _ _ bndr =
         -- This is probably wrong, but we don't need it for now.
