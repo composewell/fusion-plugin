@@ -157,14 +157,13 @@ altsContainsAnn _ _ = Nothing
 -- Determine if a let binder contains a case match on an annotated type
 -------------------------------------------------------------------------------
 
--- returns the Bndrs, that are either of the form
+-- XXX Can check the call site and return only those that would enable
+-- case-of-known constructor to kick in. Or is that not relevant?
+--
+-- | Returns the Bndrs, that are either of the form:
+--
 -- joinrec { $w$g0 x y z = case y of predicateAlt -> ... } -> returns [$w$go]
 -- join { $j1_sGH1 x y z = case y of predicateAlt -> ... } -> returns [$j1_sGH1]
---
--- Can check the call site and return only those that would enable
--- case-of-known constructor to kick in. Or is that not relevant?
--- This only concentrates on explicit Let's, doesn't care about top level
--- Case or Lam or App.
 --
 -- Returns all the binds in the hierarchy from the parent to the bind
 -- containing the case alternative as well as the case alternative scrutinizing
@@ -175,24 +174,55 @@ letBndrsThatAreCases
     -> [([CoreBind], Alt CoreBndr)]
 letBndrsThatAreCases f bind = goLet [] bind
   where
-    go :: [CoreBind] -> Bool -> CoreExpr
-            -> [([CoreBind], Alt CoreBndr)]
-    go b _ (App expr1 expr2) = go b False expr1 ++ go b False expr2
-    go b x (Lam _ expr1) = go b x expr1
-    go b _ (Let bndr expr1) = goLet b bndr ++ go b False expr1
-    go b True (Case _ _ _ alts) =
-        let binders = alts >>= (\(_, _, expr1) -> go b False expr1)
+    -- The first argument is current binder and its parent chain. We add a new
+    -- element to this path when we enter a let statement.
+    --
+    -- When second argument is "False" it means we do not examine the case
+    -- alternatives for annotated constructors when we encounter a case
+    -- statement. We pass the second arg as "True" in recursive calls to "go"
+    -- after we encounter a let binder. We reset it to "False" when we do not
+    -- want to consider inlining the current binder.
+    --
+    go :: [CoreBind] -> Bool -> CoreExpr -> [([CoreBind], Alt CoreBndr)]
+
+    -- Match and record the case alternative if it contains a constructor
+    -- annotated with "Fuse" and traverse the Alt expressions to discover more
+    -- let bindings.
+    go parents True (Case _ _ _ alts) =
+        let binders = alts >>= (\(_, _, expr1) -> go parents False expr1)
         in case f alts of
-            Just x -> (b, x) : binders
+            Just x -> (parents, x) : binders
             Nothing -> binders
-    go b False (Case _ _ _ alts) =
-        alts >>= (\(_, _, expr1) -> go b False expr1)
-    go b _ (Cast expr1 _) = go b False expr1
-    go _ _ _ = []
+
+    -- Only traverse the Alt expressions of the case to discover new let
+    -- bindings. Do not match for annotated constructors in the Alts.
+    go parents False (Case _ _ _ alts) =
+        alts >>= (\(_, _, expr1) -> go parents False expr1)
+
+    -- Enter a new let binding inside the current expression and traverse the
+    -- let expression as well.
+    go parents _ (Let bndr expr1) =    goLet parents bndr
+                                    ++ go parents False expr1
+
+    -- Traverse these to discover new let bindings
+    go parents _ (App expr1 expr2) =    go parents False expr1
+                                     ++ go parents False expr2
+    go parents x (Lam _ expr1) = go parents x expr1
+    go parents _ (Cast expr1 _) = go parents False expr1
+
+    -- There are no let bindings in these.
+    go _ _ (Var _) = []
+    go _ _ (Lit _) = []
+    go _ _ (Tick _ _) = []
+    go _ _ (Type _) = []
+    go _ _ (Coercion _) = []
 
     goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Alt CoreBndr)]
-    goLet path bndr@(NonRec _ expr1) = go (bndr : path) True expr1
-    goLet path (Rec bs) = bs >>= (\(b, expr1) -> goLet path $ NonRec b expr1)
+    -- Here we pass the second argument to "go" as "True" i.e. we are no
+    -- looking to match the case alternatives for annotated constructors.
+    goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) True expr1
+    goLet parents (Rec bs) =
+        bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
 -------------------------------------------------------------------------------
 -- Core-to-core pass to mark interesting binders to be always inlined
