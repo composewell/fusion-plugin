@@ -224,6 +224,47 @@ letBndrsThatAreCases f bind = goLet [] bind
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
+containsAnns
+    :: ([Alt CoreBndr] -> Maybe (Alt CoreBndr))
+    -> CoreBind
+    -> [([CoreBind], Alt CoreBndr)]
+containsAnns f bind =
+    -- The first argument is current binder and its parent chain. We add a new
+    -- element to this path when we enter a let statement.
+    goLet [] bind
+  where
+    go :: [CoreBind] -> CoreExpr -> [([CoreBind], Alt CoreBndr)]
+
+    -- Match and record the case alternative if it contains a constructor
+    -- annotated with "Fuse" and traverse the Alt expressions to discover more
+    -- let bindings.
+    go parents (Case _ _ _ alts) =
+        let binders = alts >>= (\(_, _, expr1) -> go parents expr1)
+        in case f alts of
+            Just x -> (parents, x) : binders
+            Nothing -> binders
+
+    -- Enter a new let binding inside the current expression and traverse the
+    -- let expression as well.
+    go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
+
+    -- Traverse these to discover new let bindings
+    go parents (App expr1 expr2) = go parents expr1 ++ go parents expr2
+    go parents (Lam _ expr1) = go parents expr1
+    go parents (Cast expr1 _) = go parents expr1
+
+    -- There are no let bindings in these.
+    go _ (Var _) = []
+    go _ (Lit _) = []
+    go _ (Tick _ _) = []
+    go _ (Type _) = []
+    go _ (Coercion _) = []
+
+    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Alt CoreBndr)]
+    goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
+    goLet parents (Rec bs) =
+        bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
+
 -------------------------------------------------------------------------------
 -- Core-to-core pass to mark interesting binders to be always inlined
 -------------------------------------------------------------------------------
@@ -240,6 +281,14 @@ getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
 -- XXX we mark certain functions (e.g. toStreamK) with a NOFUSION
 -- annotation so that we do not report them.
 
+addMissingUnique :: (Outputable a, Uniquable a) => DynFlags -> a -> String
+addMissingUnique dflags bndr =
+    let suffix = showSDoc dflags $ ppr (getUnique bndr)
+        bndrName = showSDoc dflags $ ppr bndr
+    in if DL.isSuffixOf suffix bndrName
+       then bndrName
+       else bndrName ++ "_" ++ suffix
+
 showInfo
     :: CoreBndr
     -> DynFlags
@@ -253,7 +302,7 @@ showInfo parent dflags reportMode failIt uniqBinders annotated =
         let showDetails (binds, c@(con,_,_)) =
                 let path = DL.intercalate "/"
                         $ reverse
-                        $ map (showSDoc dflags . ppr)
+                        $ map (addMissingUnique dflags)
                         $ map getNonRecBinder binds
                 in path ++ ": " ++
                     case reportMode of
@@ -263,9 +312,9 @@ showInfo parent dflags reportMode failIt uniqBinders annotated =
                             showSDoc dflags (ppr $ head binds)
                         _ -> error "transformBind: unreachable"
         let msg = "In "
-                  ++ showSDoc dflags (ppr parent)
+                  ++ addMissingUnique dflags parent
                   ++ " binders "
-                  ++ showSDoc dflags (ppr uniqBinders)
+                  ++ show (map (addMissingUnique dflags) (uniqBinders))
                   ++ " scrutinize data types annotated with "
                   ++ showSDoc dflags (ppr Fuse)
         case reportMode of
@@ -277,6 +326,7 @@ showInfo parent dflags reportMode failIt uniqBinders annotated =
 
 markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline reportMode failIt transform guts = do
+    putMsgS $ "fusion-plugin: Checking bindings to inline..."
     dflags <- getDynFlags
     anns <- getAnnotations deserializeWithData guts
     if (anyUFM (any (== Fuse)) anns)
@@ -302,13 +352,35 @@ markInline reportMode failIt transform guts = do
         --mapM_ (\(b, expr) -> transformBind dflags anns (NonRec b expr)) bs
         return bndr
 
+reportAnns :: ReportMode -> ModGuts -> CoreM ModGuts
+reportAnns reportMode guts = do
+    putMsgS $ "fusion-plugin: Checking presence of [Fuse] annotated types..."
+    dflags <- getDynFlags
+    anns <- getAnnotations deserializeWithData guts
+    if (anyUFM (any (== Fuse)) anns)
+    then bindsOnlyPass (mapM (transformBind dflags anns)) guts
+    else return guts
+  where
+    transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
+    transformBind dflags anns bind@(NonRec b _) = do
+        let parentName = showSDoc dflags (ppr b)
+        when ("main" `DL.isPrefixOf` parentName) $ do
+            let annotated = containsAnns (altsContainsAnn anns) bind
+            let uniqBinders = DL.nub (map (getNonRecBinder . head . fst) annotated)
+            when (uniqBinders /= []) $
+                showInfo b dflags reportMode False uniqBinders annotated
+        return bind
+
+    transformBind _ _ bndr = return bndr
+
 -------------------------------------------------------------------------------
 -- Install our plugin core pass
 -------------------------------------------------------------------------------
 
 -- Inserts the given list of 'CoreToDo' after the simplifier phase @n@.
-insertAfterSimplPhase :: Int -> [CoreToDo] -> [CoreToDo] -> [CoreToDo]
-insertAfterSimplPhase i ctds todos' = go ctds
+insertAfterSimplPhase
+    :: Int -> [CoreToDo] -> [CoreToDo] -> CoreToDo -> [CoreToDo]
+insertAfterSimplPhase i ctds todos' report = go ctds ++ [report]
   where
     go [] = []
     go (todo@(CoreDoSimplify _ SimplMode {sm_phase = Phase o}):todos)
@@ -351,8 +423,8 @@ install _ todos = do
             , simplsimplify
             , doMarkInline ReportSilent False True
             , simplsimplify
-            , doMarkInline ReportWarn False False
             ]
+            (CoreDoPluginPass "Check fusion" (reportAnns ReportWarn))
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install _ todos = do
