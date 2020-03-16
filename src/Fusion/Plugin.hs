@@ -378,15 +378,19 @@ reportAnns reportMode guts = do
 -------------------------------------------------------------------------------
 
 -- Inserts the given list of 'CoreToDo' after the simplifier phase @n@.
-insertAfterSimplPhase
-    :: Int -> [CoreToDo] -> [CoreToDo] -> CoreToDo -> [CoreToDo]
-insertAfterSimplPhase i ctds todos' report = go ctds ++ [report]
+insertAfterSimplPhase0
+    :: [CoreToDo] -> [CoreToDo] -> CoreToDo -> [CoreToDo]
+insertAfterSimplPhase0 origTodos ourTodos report =
+    go False origTodos ++ [report]
   where
-    go [] = []
-    go (todo@(CoreDoSimplify _ SimplMode {sm_phase = Phase o}):todos)
-        | o == i = todo : (todos' ++ todos)
-        | otherwise = todo : go todos
-    go (todo:todos) = todo : go todos
+    go False [] = error "Simplifier phase 0/\"main\" not found"
+    go True [] = []
+    go _ (todo@(CoreDoSimplify _ SimplMode
+            { sm_phase = Phase 0
+            , sm_names = ["main"]
+            }):todos)
+        = todo : ourTodos ++ go True todos
+    go found (todo:todos) = todo : go found todos
 
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install _ todos = do
@@ -416,8 +420,7 @@ install _ todos = do
     --
     -- TODO do not run simplify if we did not do anything in markInline phase.
     return $
-        insertAfterSimplPhase
-            0
+        insertAfterSimplPhase0
             todos
             [ doMarkInline ReportSilent False True
             , simplsimplify
