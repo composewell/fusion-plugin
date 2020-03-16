@@ -133,8 +133,8 @@ setInlineOnBndrs :: [CoreBndr] -> CoreBind -> CoreBind
 setInlineOnBndrs bndrs = everywhere $ mkT go
   where
     go :: CoreBind -> CoreBind
-    go (NonRec nn expr1)
-        | any (nn ==) bndrs = NonRec (setAlwaysInlineOnBndr nn) expr1
+    go (NonRec b expr) | any (b ==) bndrs =
+        NonRec (setAlwaysInlineOnBndr b) expr
     go x = x
 
 -------------------------------------------------------------------------------
@@ -354,7 +354,7 @@ markInline reportMode failIt transform guts = do
 
 reportAnns :: ReportMode -> ModGuts -> CoreM ModGuts
 reportAnns reportMode guts = do
-    putMsgS $ "fusion-plugin: Checking presence of [Fuse] annotated types..."
+    putMsgS $ "fusion-plugin: Checking presence of annotated types..."
     dflags <- getDynFlags
     anns <- getAnnotations deserializeWithData guts
     if (anyUFM (any (== Fuse)) anns)
