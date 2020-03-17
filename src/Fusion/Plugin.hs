@@ -412,8 +412,35 @@ markInline reportMode failIt transform guts = do
         --mapM_ (\(b, expr) -> transformBind dflags anns (NonRec b expr)) bs
         return bndr
 
-reportAnns :: ReportMode -> ModGuts -> CoreM ModGuts
-reportAnns reportMode guts = do
+-- | Core pass to mark functions scrutinizing constructors marked with Fuse
+fusionMarkInline :: ReportMode -> Bool -> Bool -> CoreToDo
+fusionMarkInline opt failIt transform =
+    CoreDoPluginPass "Mark for inlining" (markInline opt failIt transform)
+
+-------------------------------------------------------------------------------
+-- Simplification pass after marking inline
+-------------------------------------------------------------------------------
+
+fusionSimplify :: DynFlags -> CoreToDo
+fusionSimplify dflags =
+    CoreDoSimplify
+        (maxSimplIterations dflags)
+        SimplMode
+            { sm_phase = InitialPhase
+            , sm_names = ["Fusion Plugin Inlining"]
+            , sm_dflags = dflags
+            , sm_rules = gopt Opt_EnableRewriteRules dflags
+            , sm_eta_expand = gopt Opt_DoLambdaEtaExpansion dflags
+            , sm_inline = True
+            , sm_case_case = True
+            }
+
+-------------------------------------------------------------------------------
+-- Report unfused constructors
+-------------------------------------------------------------------------------
+
+fusionReport :: ReportMode -> ModGuts -> CoreM ModGuts
+fusionReport reportMode guts = do
     putMsgS $ "fusion-plugin: Checking presence of annotated types..."
     dflags <- getDynFlags
     anns <- getAnnotations deserializeWithData guts
@@ -612,21 +639,6 @@ install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos = do
     options <- liftIO $ parseOptions args
     dflags <- getDynFlags
-    let doMarkInline opt failIt transform =
-            CoreDoPluginPass "Inline Join Points"
-                             (markInline opt failIt transform)
-        simplsimplify =
-            CoreDoSimplify
-                (maxSimplIterations dflags)
-                SimplMode
-                    { sm_phase = InitialPhase
-                    , sm_names = ["Fusion Plugin Inlining"]
-                    , sm_dflags = dflags
-                    , sm_rules = gopt Opt_EnableRewriteRules dflags
-                    , sm_eta_expand = gopt Opt_DoLambdaEtaExpansion dflags
-                    , sm_inline = True
-                    , sm_case_case = True
-                    }
     -- We run our plugin once the simplifier finishes phase 0,
     -- followed by a gentle simplifier which inlines and case-cases
     -- twice.
@@ -640,12 +652,12 @@ install args todos = do
         (if optionsDumpCore options then _insertDumpCore else id) $
         insertAfterSimplPhase0
             todos
-            [ doMarkInline ReportSilent False True
-            , simplsimplify
-            , doMarkInline ReportSilent False True
-            , simplsimplify
+            [ fusionMarkInline ReportSilent False True
+            , fusionSimplify dflags
+            , fusionMarkInline ReportSilent False True
+            , fusionSimplify dflags
             ]
-            (CoreDoPluginPass "Check fusion" (reportAnns ReportWarn))
+            (CoreDoPluginPass "Check fusion" (fusionReport ReportWarn))
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install _ todos = do
