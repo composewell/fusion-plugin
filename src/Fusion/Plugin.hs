@@ -54,6 +54,7 @@ import Control.Monad (mzero, when, unless)
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
 import Data.Char (isSpace)
+import Data.Maybe (mapMaybe)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
 import Data.IORef (readIORef, writeIORef)
@@ -228,19 +229,26 @@ altsContainsAnn _ _ = Nothing
 -- XXX Can check the call site and return only those that would enable
 -- case-of-known constructor to kick in. Or is that not relevant?
 --
--- | Returns the Bndrs, that are either of the form:
+-- | Discover binders that start with a pattern match on constructors that are
+-- annotated with Fuse. For example, for the following code:
 --
+-- @
 -- joinrec { $w$g0 x y z = case y of predicateAlt -> ... } -> returns [$w$go]
 -- join { $j1_sGH1 x y z = case y of predicateAlt -> ... } -> returns [$j1_sGH1]
+-- @
+--
+-- It will return @$w$go@ and @$j1_sGH1@ if they are matching on fusible
+-- constructors.
 --
 -- Returns all the binds in the hierarchy from the parent to the bind
--- containing the case alternative as well as the case alternative scrutinizing
--- the annotated type.
+-- containing the case alternative. Along with the binders it also returns the
+-- case alternative scrutinizing the annotated type for better errors with
+-- context.
 letBndrsThatAreCases
-    :: ([Alt CoreBndr] -> Maybe (Alt CoreBndr))
+    :: UniqFM [Fuse]
     -> CoreBind
     -> [([CoreBind], Alt CoreBndr)]
-letBndrsThatAreCases f bind = goLet [] bind
+letBndrsThatAreCases anns bind = goLet [] bind
   where
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
@@ -258,7 +266,7 @@ letBndrsThatAreCases f bind = goLet [] bind
     -- let bindings.
     go parents True (Case _ _ _ alts) =
         let binders = alts >>= (\(_, _, expr1) -> go parents False expr1)
-        in case f alts of
+        in case altsContainsAnn anns alts of
             Just x -> (parents, x) : binders
             Nothing -> binders
 
@@ -270,9 +278,13 @@ letBndrsThatAreCases f bind = goLet [] bind
     -- Enter a new let binding inside the current expression and traverse the
     -- let expression as well.
     go parents _ (Let bndr expr1) =    goLet parents bndr
+    -- If the binding starts with a "let" expression we ignore the case matches
+    -- in its expression. Can inlining such lets be useful in some cases?
                                     ++ go parents False expr1
 
-    -- Traverse these to discover new let bindings
+    -- Traverse these to discover new let bindings. We ignore any case matches
+    -- directly in the application expr. There should not be any harm in
+    -- chasing expr1 with True here?
     go parents _ (App expr1 expr2) =    go parents False expr1
                                      ++ go parents False expr2
     go parents x (Lam _ expr1) = go parents x expr1
@@ -286,30 +298,82 @@ letBndrsThatAreCases f bind = goLet [] bind
     go _ _ (Coercion _) = []
 
     goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Alt CoreBndr)]
-    -- Here we pass the second argument to "go" as "True" i.e. we are no
+    -- Here we pass the second argument to "go" as "True" i.e. we are now
     -- looking to match the case alternatives for annotated constructors.
     goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) True expr1
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
-containsAnns
-    :: ([Alt CoreBndr] -> Maybe (Alt CoreBndr))
-    -> CoreBind
-    -> [([CoreBind], Alt CoreBndr)]
-containsAnns f bind =
+-- XXX Currently this function and containsAnns are equivalent. So containsAnns
+-- can be used in place of this. But we may want to restrict this to certain
+-- cases and keep containsAnns unrestricted so it is kept separate for now.
+--
+-- | Discover binders whose return type is a fusible constructor and the
+-- constructor is directly used in the binder definition rather than through an
+-- identifier.
+--
+constructingBinders :: UniqFM [Fuse] -> CoreBind -> [([CoreBind], DataCon)]
+constructingBinders anns bind = goLet [] bind
+  where
+    -- The first argument is current binder and its parent chain. We add a new
+    -- element to this path when we enter a let statement.
+    --
+    go :: [CoreBind] -> CoreExpr -> [([CoreBind], DataCon)]
+
+    -- Enter a new let binding inside the current expression and traverse the
+    -- let expression as well.
+    go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
+
+    -- Traverse these to discover new let bindings
+    go parents (Case _ _ _ alts) =
+        alts >>= (\(_, _, expr1) -> go parents expr1)
+    go parents (App expr1 expr2) = go parents expr1 ++ go parents expr2
+    go parents (Lam _ expr1) = go parents expr1
+    go parents (Cast expr1 _) = go parents expr1
+
+    -- Check if the Var is a data constructor of interest
+    go parents (Var i) =
+        case idDetails i of
+            DataConWorkId dcon ->
+                case lookupUFM anns (getUnique $ dataConTyCon dcon) of
+                    Just _ -> [(parents, dcon)]
+                    Nothing -> []
+            _ -> []
+
+    go _ (Lit _) = []
+    go _ (Tick _ _) = []
+    go _ (Type _) = []
+    go _ (Coercion _) = []
+
+    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], DataCon)]
+    goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
+    goLet parents (Rec bs) =
+        bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
+
+data Context = CaseAlt (Alt CoreBndr) | Constr DataCon
+
+-- letBndrsThatAreCases restricts itself to only case matches right on
+-- entry to a let. This one looks for case matches anywhere.
+--
+-- | Report whether data constructors of interest are case matched or returned
+-- anywhere in the binders, not just case match on entry or construction on
+-- return.
+--
+containsAnns :: UniqFM [Fuse] -> CoreBind -> [([CoreBind], Context)]
+containsAnns anns bind =
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
     goLet [] bind
   where
-    go :: [CoreBind] -> CoreExpr -> [([CoreBind], Alt CoreBndr)]
+    go :: [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
 
     -- Match and record the case alternative if it contains a constructor
     -- annotated with "Fuse" and traverse the Alt expressions to discover more
     -- let bindings.
     go parents (Case _ _ _ alts) =
         let binders = alts >>= (\(_, _, expr1) -> go parents expr1)
-        in case f alts of
-            Just x -> (parents, x) : binders
+        in case altsContainsAnn anns alts of
+            Just x -> (parents, CaseAlt x) : binders
             Nothing -> binders
 
     -- Enter a new let binding inside the current expression and traverse the
@@ -321,14 +385,22 @@ containsAnns f bind =
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
 
+    -- Check if the Var is a data constructor of interest
+    go parents (Var i) =
+        case idDetails i of
+            DataConWorkId dcon ->
+                case lookupUFM anns (getUnique $ dataConTyCon dcon) of
+                    Just _ -> [(parents, Constr dcon)]
+                    Nothing -> []
+            _ -> []
+
     -- There are no let bindings in these.
-    go _ (Var _) = []
     go _ (Lit _) = []
     go _ (Tick _ _) = []
     go _ (Type _) = []
     go _ (Coercion _) = []
 
-    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Alt CoreBndr)]
+    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Context)]
     goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
@@ -357,39 +429,68 @@ addMissingUnique dflags bndr =
        then bndrName
        else bndrName ++ "_" ++ suffix
 
+showDetailsCaseMatch
+    :: DynFlags
+    -> ReportMode
+    -> ([CoreBind], Alt CoreBndr)
+    -> String
+showDetailsCaseMatch dflags reportMode (binds, c@(con,_,_)) =
+    let path = DL.intercalate "/"
+            $ reverse
+            $ map (addMissingUnique dflags)
+            $ map getNonRecBinder binds
+    in path ++ ": " ++
+        case reportMode of
+            ReportWarn -> showSDoc dflags (ppr con)
+            ReportVerbose -> showSDoc dflags (ppr c)
+            ReportVerbose2 ->
+                showSDoc dflags (ppr $ head binds)
+            _ -> error "transformBind: unreachable"
+
+showDetailsConstr
+    :: DynFlags
+    -> ReportMode
+    -> ([CoreBind], DataCon)
+    -> String
+showDetailsConstr dflags reportMode (binds, con) =
+    let path = DL.intercalate "/"
+            $ reverse
+            $ map (addMissingUnique dflags)
+            $ map getNonRecBinder binds
+    in path ++ ": " ++
+        case reportMode of
+            ReportWarn -> showSDoc dflags (ppr con)
+            ReportVerbose -> showSDoc dflags (ppr con)
+            ReportVerbose2 ->
+                showSDoc dflags (ppr $ head binds)
+            _ -> error "transformBind: unreachable"
+
 showInfo
     :: CoreBndr
     -> DynFlags
     -> ReportMode
     -> Bool
+    -> String
     -> [CoreBndr]
-    -> [([CoreBind], Alt CoreBndr)]
+    -> [([CoreBind], a)]
+    -> (DynFlags -> ReportMode -> ([CoreBind], a) -> String)
     -> CoreM ()
-showInfo parent dflags reportMode failIt uniqBinders annotated =
+showInfo parent dflags reportMode failIt
+        tag uniqBinders annotated showDetails =
     when (uniqBinders /= []) $ do
-        let showDetails (binds, c@(con,_,_)) =
-                let path = DL.intercalate "/"
-                        $ reverse
-                        $ map (addMissingUnique dflags)
-                        $ map getNonRecBinder binds
-                in path ++ ": " ++
-                    case reportMode of
-                        ReportWarn -> showSDoc dflags (ppr con)
-                        ReportVerbose -> showSDoc dflags (ppr c)
-                        ReportVerbose2 ->
-                            showSDoc dflags (ppr $ head binds)
-                        _ -> error "transformBind: unreachable"
         let msg = "In "
                   ++ addMissingUnique dflags parent
                   ++ " binders "
                   ++ show (map (addMissingUnique dflags) (uniqBinders))
-                  ++ " scrutinize data types annotated with "
+                  ++ " " ++ tag
+                  ++ " data types annotated with "
                   ++ showSDoc dflags (ppr Fuse)
         case reportMode of
             ReportSilent -> return ()
             _ -> do
                 putMsgS msg
-                putMsgS $ DL.unlines $ map showDetails annotated
+                putMsgS $ DL.unlines
+                        $ map (showDetails dflags reportMode) annotated
         when failIt $ error "failing"
 
 markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
@@ -403,15 +504,20 @@ markInline reportMode failIt transform guts = do
   where
     transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns bind@(NonRec b _) = do
-        let annotated = letBndrsThatAreCases (altsContainsAnn anns) bind
-        let uniqBinders = DL.nub (map (getNonRecBinder. head . fst) annotated)
+        let patternMatches = letBndrsThatAreCases anns bind
+        let uniqPat = DL.nub (map (getNonRecBinder. head . fst) patternMatches)
 
-        when (uniqBinders /= []) $
-            showInfo b dflags reportMode failIt uniqBinders annotated
+        let constrs = constructingBinders anns bind
+        let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
+
+        showInfo b dflags reportMode failIt "SCRUTINIZE"
+            uniqPat patternMatches showDetailsCaseMatch
+        showInfo b dflags reportMode failIt "CONSTRUCT"
+            uniqConstr constrs showDetailsConstr
 
         let bind' =
                 if transform
-                then setInlineOnBndrs uniqBinders bind
+                then setInlineOnBndrs (uniqPat ++ uniqConstr) bind
                 else bind
         return bind'
 
@@ -458,10 +564,29 @@ fusionReport reportMode guts = do
   where
     transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns bind@(NonRec b _) = do
-        let annotated = containsAnns (altsContainsAnn anns) bind
-            uniqBinders = DL.nub (map (getNonRecBinder . head . fst) annotated)
-        when (uniqBinders /= []) $
-            showInfo b dflags reportMode False uniqBinders annotated
+        let parentName = showSDoc dflags (ppr b)
+        when ("main" `DL.isPrefixOf` parentName) $ do
+            let results = containsAnns anns bind
+
+            let getAlts x =
+                    case x of
+                        (bs, CaseAlt alt) -> Just (bs, alt)
+                        _ -> Nothing
+            let annotated = mapMaybe getAlts results
+            let uniqBinders = DL.nub (map (getNonRecBinder . head . fst)
+                                          annotated)
+            showInfo b dflags reportMode False "SCRUTINIZE"
+                uniqBinders annotated showDetailsCaseMatch
+
+            -- let constrs = constructingBinders anns bind
+            let getConstrs x =
+                    case x of
+                        (bs, Constr con) -> Just (bs, con)
+                        _ -> Nothing
+            let constrs = mapMaybe getConstrs results
+            let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
+            showInfo b dflags reportMode False "CONSTRUCT"
+                uniqConstr constrs showDetailsConstr
         return bind
 
     transformBind _ _ bndr = return bndr
