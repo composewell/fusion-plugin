@@ -510,6 +510,7 @@ showInfo parent dflags reportMode failIt
             _ -> do
                 putMsgS msg
                 putMsgS $ DL.unlines
+                        $ DL.nub
                         $ map (showDetails dflags reportMode) annotated
         when failIt $ error "failing"
 
