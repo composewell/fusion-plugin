@@ -426,7 +426,12 @@ containsAnns anns bind =
 -- Core-to-core pass to mark interesting binders to be always inlined
 -------------------------------------------------------------------------------
 
-data ReportMode = ReportSilent | ReportWarn | ReportVerbose | ReportVerbose2
+data ReportMode =
+      ReportSilent
+    | ReportWarn
+    | ReportVerbose
+    | ReportVerbose1
+    | ReportVerbose2
 
 getNonRecBinder :: CoreBind -> CoreBndr
 getNonRecBinder (NonRec b _) = b
@@ -461,8 +466,8 @@ showDetailsCaseMatch
 showDetailsCaseMatch dflags reportMode (binds, c@(con,_,_)) =
     listPath dflags binds ++ ": " ++
         case reportMode of
-            ReportWarn -> showSDoc dflags (ppr con)
-            ReportVerbose -> showSDoc dflags (ppr c)
+            ReportVerbose -> showSDoc dflags (ppr con)
+            ReportVerbose1 -> showSDoc dflags (ppr c)
             ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
             _ -> error "transformBind: unreachable"
 
@@ -474,8 +479,8 @@ showDetailsConstr
 showDetailsConstr dflags reportMode (binds, con) =
     listPath dflags binds ++ ": " ++
         case reportMode of
-            ReportWarn -> showSDoc dflags (ppr con)
             ReportVerbose -> showSDoc dflags (ppr con)
+            ReportVerbose1 -> showSDoc dflags (ppr con)
             ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
             _ -> error "transformBind: unreachable"
 
@@ -525,6 +530,12 @@ markInline reportMode failIt transform guts = do
         let constrs = constructingBinders anns bind
         let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
 
+        -- TBD: For ReportWarn level prepare a single consolidated list of
+        -- paths with one entry for each binder and giving one example of what
+        -- it scrutinizes and/or constructs, for example:
+        --
+        -- $sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
+        --
         case reportMode of
             ReportSilent -> return ()
             ReportWarn -> do
@@ -608,6 +619,12 @@ fusionReport reportMode guts = do
             let constrs = mapMaybe getConstrs results
             let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
 
+        -- TBD: For ReportWarn level prepare a single consolidated list of
+        -- paths with one entry for each binder and giving one example of what
+        -- it scrutinizes and/or constructs, for example:
+        --
+        -- $sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
+        --
             case reportMode of
                 ReportSilent -> return ()
                 ReportWarn -> do
