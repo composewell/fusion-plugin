@@ -535,7 +535,7 @@ markInline reportMode failIt transform guts = do
         -- paths with one entry for each binder and giving one example of what
         -- it scrutinizes and/or constructs, for example:
         --
-        -- $sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
+        -- \$sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
         --
         case reportMode of
             ReportSilent -> return ()
@@ -624,7 +624,7 @@ fusionReport msg reportMode guts = do
         -- paths with one entry for each binder and giving one example of what
         -- it scrutinizes and/or constructs, for example:
         --
-        -- $sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
+        -- \$sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
         --
             case reportMode of
                 ReportSilent -> return ()
