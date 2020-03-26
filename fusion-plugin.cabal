@@ -33,6 +33,8 @@ category:            Development
 extra-source-files:  CHANGELOG.md
                      NOTICE
                      README.md
+                     design/README.md
+                     design/join-constr-app.hs
                      design/rec-binder-example.core
                      design/rec-binder-example.hs
                      stack.yaml
