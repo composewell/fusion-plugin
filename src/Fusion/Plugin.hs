@@ -293,7 +293,8 @@ letBndrsThatAreCases anns bind = goLet [] bind
     go parents _ (Let bndr expr1) =    goLet parents bndr
     -- If the binding starts with a "let" expression we ignore the case matches
     -- in its expression. Can inlining such lets be useful in some cases?
-                                    ++ go parents False expr1
+    -- It turns out that we have hit such a case in parsers code in streamly.
+                                    ++ go parents True expr1
 
     -- Traverse these to discover new let bindings. We ignore any case matches
     -- directly in the application expr. There should not be any harm in
