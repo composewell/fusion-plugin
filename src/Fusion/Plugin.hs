@@ -381,9 +381,9 @@ letBndrsThatAreCases anns bind = goLet [] bind
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
-needInlineConstr :: CoreBind -> UNIQ_FM -> DataCon -> Bool
-needInlineConstr parent anns dcon =
-    case lookupUFM anns (GET_NAME $ dataConTyCon dcon) of
+needInlineTyCon :: CoreBind -> UNIQ_FM -> TyCon -> Bool
+needInlineTyCon parent anns tycon =
+    case lookupUFM anns (GET_NAME tycon) of
         Just _ | not (hasInlineBinder $ getNonRecBinder parent) -> True
         _ -> False
 
@@ -395,13 +395,13 @@ needInlineConstr parent anns dcon =
 -- constructor is directly used in the binder definition rather than through an
 -- identifier.
 --
-constructingBinders :: UNIQ_FM -> CoreBind -> [([CoreBind], DataCon)]
+constructingBinders :: UNIQ_FM -> CoreBind -> [([CoreBind], Id)]
 constructingBinders anns bind = goLet [] bind
   where
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
     --
-    go :: [CoreBind] -> CoreExpr -> [([CoreBind], DataCon)]
+    go :: [CoreBind] -> CoreExpr -> [([CoreBind], Id)]
 
     -- Enter a new let binding inside the current expression and traverse the
     -- let expression as well.
@@ -416,9 +416,9 @@ constructingBinders anns bind = goLet [] bind
 
     -- Check if the Var is a data constructor of interest
     go parents (Var i) =
-        let needInline = needInlineConstr (head parents) anns
-        in case idDetails i of
-            DataConWorkId dcon | needInline dcon -> [(parents, dcon)]
+        let needInline = needInlineTyCon (head parents) anns
+        in case tyConAppTyConPicky_maybe (varType i) of
+            Just tycon | needInline tycon -> [(parents, i)]
             _ -> []
 
     go _ (Lit _) = []
@@ -426,12 +426,12 @@ constructingBinders anns bind = goLet [] bind
     go _ (Type _) = []
     go _ (Coercion _) = []
 
-    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], DataCon)]
+    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Id)]
     goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
-data Context = CaseAlt (Alt CoreBndr) | Constr DataCon
+data Context = CaseAlt (Alt CoreBndr) | Constr Id
 
 -- letBndrsThatAreCases restricts itself to only case matches right on
 -- entry to a let. This one looks for case matches anywhere.
@@ -466,14 +466,14 @@ containsAnns anns bind =
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
 
-    -- Check if the Var is a data constructor of interest
+    -- Check if the Var is of the type of a data constructor of interest
     go parents (Var i) =
-        case idDetails i of
-            DataConWorkId dcon ->
-                case lookupUFM anns (GET_NAME $ dataConTyCon dcon) of
-                    Just _ -> [(parents, Constr dcon)]
-                    Nothing -> []
-            _ -> []
+        case tyConAppTyConPicky_maybe (varType i) of
+            Just tycon ->
+                    case lookupUFM anns (GET_NAME tycon) of
+                        Just _ -> [(parents, Constr i)]
+                        Nothing -> []
+            Nothing -> []
 
     -- There are no let bindings in these.
     go _ (Lit _) = []
@@ -527,15 +527,21 @@ showDetailsCaseMatch dflags reportMode (binds, c@(ALT_CONSTR(con,_,_))) =
 showDetailsConstr
     :: DynFlags
     -> ReportMode
-    -> ([CoreBind], DataCon)
+    -> ([CoreBind], Id)
     -> String
 showDetailsConstr dflags reportMode (binds, con) =
-    listPath dflags binds ++ ": " ++
-        case reportMode of
-            ReportVerbose -> showSDoc dflags (ppr con)
-            ReportVerbose1 -> showSDoc dflags (ppr con)
-            ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
-            _ -> error "transformBind: unreachable"
+    let t = tyConAppTyConPicky_maybe (varType con)
+        vstr =
+            case reportMode of
+                ReportVerbose -> showSDoc dflags (ppr con)
+                ReportVerbose1 -> showSDoc dflags (ppr con)
+                ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
+                _ -> error "transformBind: unreachable"
+        tstr =
+            case t of
+                Nothing -> " :: Not a Type Constructor"
+                Just x -> " :: " ++ showSDoc dflags (ppr x)
+    in listPath dflags binds ++ ": " ++ vstr ++ tstr
 
 -- Orphan instance for 'Fuse'
 instance Outputable Fuse where
