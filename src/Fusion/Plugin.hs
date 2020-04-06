@@ -363,12 +363,10 @@ reportAnns reportMode guts = do
   where
     transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns bind@(NonRec b _) = do
-        let parentName = showSDoc dflags (ppr b)
-        when ("main" `DL.isPrefixOf` parentName) $ do
-            let annotated = containsAnns (altsContainsAnn anns) bind
-            let uniqBinders = DL.nub (map (getNonRecBinder . head . fst) annotated)
-            when (uniqBinders /= []) $
-                showInfo b dflags reportMode False uniqBinders annotated
+        let annotated = containsAnns (altsContainsAnn anns) bind
+            uniqBinders = DL.nub (map (getNonRecBinder . head . fst) annotated)
+        when (uniqBinders /= []) $
+            showInfo b dflags reportMode False uniqBinders annotated
         return bind
 
     transformBind _ _ bndr = return bndr
