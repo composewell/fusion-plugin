@@ -531,6 +531,13 @@ dumpPassResult dflags unqual suffix hdr extra_info binds rules = do
                     , text "------ Local rules for imported ids --------"
                     , pprRules rules ]
 
+filterOutLast :: (a -> Bool) -> [a] -> [a]
+filterOutLast _ [] = []
+filterOutLast p [x]
+    | p x = []
+    | otherwise = [x]
+filterOutLast p (x:xs) = x : filterOutLast p xs
+
 dumpResult
     :: DynFlags
     -> PrintUnqualified
@@ -550,8 +557,10 @@ dumpResult dflags print_unqual counter todo binds rules =
         GhcPlugins.<> todo
 
     suffix = show counter ++ "-"
-        ++ map (\x -> if isSpace x then '-' else x)
-               (showSDoc dflags todo)
+        ++ (map (\x -> if isSpace x then '-' else x)
+               $ filterOutLast isSpace
+               $ takeWhile (/= '(')
+               $ showSDoc dflags todo)
 
 dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
 dumpCore counter todo
