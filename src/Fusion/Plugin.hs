@@ -50,7 +50,9 @@ module Fusion.Plugin
 where
 
 -- Explicit/qualified imports
-import Control.Monad (when, unless)
+import Control.Monad (mzero, when, unless)
+import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.State
 import Data.Char (isSpace)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
@@ -113,6 +115,54 @@ import Fusion.Plugin.Types (Fuse(..))
 -- presence of the stream state constructors.
 
 #if MIN_VERSION_ghc(8,6,0)
+
+-------------------------------------------------------------------------------
+-- Commandline parsing lifted from streamly/benchmark/Chart.hs
+-------------------------------------------------------------------------------
+
+data Options = Options
+    { optionsDumpCore :: Bool
+    } deriving Show
+
+defaultOptions :: Options
+defaultOptions = Options False
+
+setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setDumpCore val = do
+    (args, opts) <- get
+    put (args, opts { optionsDumpCore = val })
+
+-- Like the shell "shift" to shift the command line arguments
+shift :: StateT ([String], Options) (MaybeT IO) (Maybe String)
+shift = do
+    s <- get
+    case s of
+        ([], _) -> return Nothing
+        (x : xs, opts) -> put (xs, opts) >> return (Just x)
+
+-- totally imperative style option parsing
+parseOptions :: [CommandLineOption] -> IO Options
+parseOptions args = do
+    maybeOptions <- runMaybeT
+                        $ flip evalStateT (args, defaultOptions)
+                        $ do parseLoop
+                             fmap snd get
+    return $ maybe defaultOptions id maybeOptions
+
+    where
+
+    parseOpt opt =
+        case opt of
+            "dump-core" -> setDumpCore True
+            str -> do
+                liftIO $ putStrLn $ "Unrecognized option - \"" ++ str ++ "\""
+                mzero
+
+    parseLoop = do
+        next <- shift
+        case next of
+            Just opt -> parseOpt opt >> parseLoop
+            Nothing -> return ()
 
 -------------------------------------------------------------------------------
 -- Set always INLINE on a binder
@@ -550,7 +600,8 @@ insertAfterSimplPhase0 origTodos ourTodos report =
     go found (todo:todos) = todo : go found todos
 
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
-install _ todos = do
+install args todos = do
+    options <- liftIO $ parseOptions args
     dflags <- getDynFlags
     let doMarkInline opt failIt transform =
             CoreDoPluginPass "Inline Join Points"
@@ -577,10 +628,7 @@ install _ todos = do
     --
     -- TODO do not run simplify if we did not do anything in markInline phase.
     return $
--- XXX this can be controlled via command line options
-#ifdef DUMP_CORE
-        _insertDumpCore $
-#endif
+        (if optionsDumpCore options then _insertDumpCore else id) $
         insertAfterSimplPhase0
             todos
             [ doMarkInline ReportSilent False True
