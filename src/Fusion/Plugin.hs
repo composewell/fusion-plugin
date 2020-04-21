@@ -64,7 +64,6 @@ import System.IO (Handle, IOMode(..), withFile, hSetEncoding, utf8)
 import Text.Printf (printf)
 
 import ErrUtils (mkDumpDoc, Severity(..))
-import Outputable (Outputable(..), text)
 import PprCore (pprCoreBindingsWithSize, pprRules)
 
 import qualified Data.List as DL
