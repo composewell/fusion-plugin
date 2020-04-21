@@ -61,6 +61,7 @@ import Data.Time (getCurrentTime)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>), takeDirectory)
 import System.IO (Handle, IOMode(..), withFile, hSetEncoding, utf8)
+import Text.Printf (printf)
 
 import ErrUtils (mkDumpDoc, Severity(..))
 import Outputable (Outputable(..), text)
@@ -583,7 +584,7 @@ dumpResult dflags print_unqual counter todo binds rules =
         GhcPlugins.<> text "] "
         GhcPlugins.<> todo
 
-    suffix = show counter ++ "-"
+    suffix = printf "%02d" counter ++ "-"
         ++ (map (\x -> if isSpace x then '-' else x)
                $ filterOutLast isSpace
                $ takeWhile (/= '(')
