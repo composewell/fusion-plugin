@@ -86,7 +86,7 @@ matrix:
   # otherwise.
 
   - env: BUILD=stack RESOLVER=lts-14.20 GHCVER=8.6
-    addons: {apt: {packages: [cabal-install-2.4,libsdl1.2-dev], sources: [hvr-ghc]}}
+    addons: {apt: {packages: [cabal-install-2.4], sources: [hvr-ghc]}}
 
   # --------------------------------------------------------------------------
   # OS X build
