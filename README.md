@@ -50,6 +50,10 @@ To use this plugin, add this package to your `build-depends`
 and pass the following to your ghc-options: `ghc-options: -O2
 -fplugin=Fusion.Plugin`
 
+To dump core after each core to core transformation, pass the argument
+`-fplugin-opt=Fusion.Plugin:dump-core`. Output from each
+transformation is then printed in a different file.
+
 ## See also
 
 If you are a library author looking to annotate the types, you need to

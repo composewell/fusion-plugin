@@ -1,3 +1,10 @@
+## Unreleased
+
+### Enhancements
+
+- `Fusion.Plugin` now accepts a command line argument `dump-core` to
+  dump the core from each core-to-core pass in a separate file.
+
 ## 0.2.0
 
 ### Breaking Change
