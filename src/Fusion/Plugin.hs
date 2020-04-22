@@ -87,6 +87,14 @@ import Fusion.Plugin.Types (Fuse(..))
 -- @
 -- ghc-options: -O2 -fplugin=Fusion.Plugin
 -- @
+--
+-- To dump the core after each core to core transformation, pass the
+-- following to your ghc-options:
+--
+-- @
+-- ghc-options: -O2 -fplugin=Fusion.Plugin -fplugin-opt=Fusion.Plugin:dump-core
+-- @
+-- Output from each transformation is then printed in a different file.
 
 -- $impl
 --
