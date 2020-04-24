@@ -842,6 +842,8 @@ install args todos = do
             , fusionSimplify dflags
             , fusionMarkInline ReportSilent False True
             , fusionSimplify dflags
+            , fusionMarkInline ReportSilent False True
+            , fusionSimplify dflags
             -- This lets us know what was left unfused after all the inlining
             -- and case-of-case transformations.
             , let msg = "Check unfused (post inlining)"
