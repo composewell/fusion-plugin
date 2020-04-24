@@ -517,7 +517,7 @@ markInline reportMode failIt transform guts = do
 
         let bind' =
                 if transform
-                then setInlineOnBndrs (uniqPat ++ uniqConstr) bind
+                then setInlineOnBndrs (uniqPat {- ++ uniqConstr -}) bind
                 else bind
         return bind'
 
