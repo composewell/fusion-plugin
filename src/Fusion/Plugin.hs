@@ -588,9 +588,9 @@ fusionSimplify dflags =
 -- Report unfused constructors
 -------------------------------------------------------------------------------
 
-fusionReport :: ReportMode -> ModGuts -> CoreM ModGuts
-fusionReport reportMode guts = do
-    putMsgS $ "fusion-plugin: Checking presence of annotated types..."
+fusionReport :: String -> ReportMode -> ModGuts -> CoreM ModGuts
+fusionReport msg reportMode guts = do
+    putMsgS $ "fusion-plugin: " ++ msg ++ "..."
     dflags <- getDynFlags
     anns <- getAnnotations deserializeWithData guts
     if (anyUFM (any (== Fuse)) anns)
@@ -840,8 +840,13 @@ install args todos = do
             , fusionSimplify dflags
             , fusionMarkInline ReportSilent False True
             , fusionSimplify dflags
+            -- This lets us know what was left unfused after all the inlining
+            -- and case-of-case transformations.
+            , let msg = "Check unfused (post inlining)"
+              in CoreDoPluginPass msg (fusionReport msg ReportSilent)
             ]
-            (CoreDoPluginPass "Check fusion" (fusionReport ReportWarn))
+            (let msg = "Check unfused (final)"
+            in CoreDoPluginPass msg (fusionReport msg ReportWarn))
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install _ todos = do
