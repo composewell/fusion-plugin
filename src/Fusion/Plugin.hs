@@ -198,6 +198,7 @@ setAlwaysInlineOnBndr n =
      in lazySetIdInfo n info'
 
 --TODO: Replace self-recursive definitions with a loop breaker.
+-- | Set inline on specific binders inside a given bind.
 setInlineOnBndrs :: [CoreBndr] -> CoreBind -> CoreBind
 setInlineOnBndrs bndrs = everywhere $ mkT go
   where
@@ -205,6 +206,11 @@ setInlineOnBndrs bndrs = everywhere $ mkT go
     go (NonRec b expr) | any (b ==) bndrs =
         NonRec (setAlwaysInlineOnBndr b) expr
     go x = x
+
+hasInlineBinder :: CoreBndr -> Bool
+hasInlineBinder bndr =
+    let inl = inlinePragInfo $ idInfo bndr
+    in isInlinePragma inl && isActiveIn 0 (inlinePragmaActivation inl)
 
 -------------------------------------------------------------------------------
 -- Inspect case alternatives for interesting constructor matches
@@ -221,6 +227,13 @@ altsContainsAnn anns (bndr@(DataAlt dcon, _, _):_) =
         Just _ -> Just bndr
 altsContainsAnn anns ((DEFAULT, _, _):alts) = altsContainsAnn anns alts
 altsContainsAnn _ _ = Nothing
+
+needInlineCaseAlt
+    :: CoreBind -> UniqFM [Fuse] -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
+needInlineCaseAlt parent anns bndr =
+    case altsContainsAnn anns bndr of
+        Just alt | not (hasInlineBinder $ getNonRecBinder parent) -> Just alt
+        _ -> Nothing
 
 -------------------------------------------------------------------------------
 -- Determine if a let binder contains a case match on an annotated type
@@ -266,7 +279,7 @@ letBndrsThatAreCases anns bind = goLet [] bind
     -- let bindings.
     go parents True (Case _ _ _ alts) =
         let binders = alts >>= (\(_, _, expr1) -> go parents False expr1)
-        in case altsContainsAnn anns alts of
+        in case needInlineCaseAlt (head parents) anns alts of
             Just x -> (parents, x) : binders
             Nothing -> binders
 
@@ -304,6 +317,12 @@ letBndrsThatAreCases anns bind = goLet [] bind
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
+needInlineConstr :: CoreBind -> UniqFM [Fuse] -> DataCon -> Bool
+needInlineConstr parent anns dcon =
+    case lookupUFM anns (getUnique $ dataConTyCon dcon) of
+        Just _ | not (hasInlineBinder $ getNonRecBinder parent) -> True
+        _ -> False
+
 -- XXX Currently this function and containsAnns are equivalent. So containsAnns
 -- can be used in place of this. But we may want to restrict this to certain
 -- cases and keep containsAnns unrestricted so it is kept separate for now.
@@ -333,11 +352,9 @@ constructingBinders anns bind = goLet [] bind
 
     -- Check if the Var is a data constructor of interest
     go parents (Var i) =
-        case idDetails i of
-            DataConWorkId dcon ->
-                case lookupUFM anns (getUnique $ dataConTyCon dcon) of
-                    Just _ -> [(parents, dcon)]
-                    Nothing -> []
+        let needInline = needInlineConstr (head parents) anns
+        in case idDetails i of
+            DataConWorkId dcon | needInline dcon -> [(parents, dcon)]
             _ -> []
 
     go _ (Lit _) = []
@@ -429,22 +446,24 @@ addMissingUnique dflags bndr =
        then bndrName
        else bndrName ++ "_" ++ suffix
 
+listPath :: DynFlags -> [CoreBind] -> [Char]
+listPath dflags binds =
+      DL.intercalate "/"
+    $ reverse
+    $ map (addMissingUnique dflags)
+    $ map getNonRecBinder binds
+
 showDetailsCaseMatch
     :: DynFlags
     -> ReportMode
     -> ([CoreBind], Alt CoreBndr)
     -> String
 showDetailsCaseMatch dflags reportMode (binds, c@(con,_,_)) =
-    let path = DL.intercalate "/"
-            $ reverse
-            $ map (addMissingUnique dflags)
-            $ map getNonRecBinder binds
-    in path ++ ": " ++
+    listPath dflags binds ++ ": " ++
         case reportMode of
             ReportWarn -> showSDoc dflags (ppr con)
             ReportVerbose -> showSDoc dflags (ppr c)
-            ReportVerbose2 ->
-                showSDoc dflags (ppr $ head binds)
+            ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
             _ -> error "transformBind: unreachable"
 
 showDetailsConstr
@@ -453,16 +472,11 @@ showDetailsConstr
     -> ([CoreBind], DataCon)
     -> String
 showDetailsConstr dflags reportMode (binds, con) =
-    let path = DL.intercalate "/"
-            $ reverse
-            $ map (addMissingUnique dflags)
-            $ map getNonRecBinder binds
-    in path ++ ": " ++
+    listPath dflags binds ++ ": " ++
         case reportMode of
             ReportWarn -> showSDoc dflags (ppr con)
             ReportVerbose -> showSDoc dflags (ppr con)
-            ReportVerbose2 ->
-                showSDoc dflags (ppr $ head binds)
+            ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
             _ -> error "transformBind: unreachable"
 
 showInfo
@@ -487,6 +501,7 @@ showInfo parent dflags reportMode failIt
                   ++ showSDoc dflags (ppr Fuse)
         case reportMode of
             ReportSilent -> return ()
+            ReportWarn -> return ()
             _ -> do
                 putMsgS msg
                 putMsgS $ DL.unlines
@@ -510,14 +525,23 @@ markInline reportMode failIt transform guts = do
         let constrs = constructingBinders anns bind
         let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
 
-        showInfo b dflags reportMode failIt "SCRUTINIZE"
-            uniqPat patternMatches showDetailsCaseMatch
-        showInfo b dflags reportMode failIt "CONSTRUCT"
-            uniqConstr constrs showDetailsConstr
+        case reportMode of
+            ReportSilent -> return ()
+            ReportWarn -> do
+                let allBinds = map fst patternMatches ++ map fst constrs
+                when (not $ null allBinds) $ do
+                    putMsgS "INLINE required on:"
+                    putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
+            _ -> do
+                showInfo b dflags reportMode failIt "SCRUTINIZE"
+                    uniqPat patternMatches showDetailsCaseMatch
+                showInfo b dflags reportMode failIt "CONSTRUCT"
+                    uniqConstr constrs showDetailsConstr
 
-        let bind' =
-                if transform
-                then setInlineOnBndrs (uniqPat {- ++ uniqConstr -}) bind
+        let bind' = do
+                let allBinders = uniqPat -- ++ uniqConstr
+                if transform && (not $ null allBinders)
+                then setInlineOnBndrs allBinders bind
                 else bind
         return bind'
 
@@ -572,11 +596,9 @@ fusionReport reportMode guts = do
                     case x of
                         (bs, CaseAlt alt) -> Just (bs, alt)
                         _ -> Nothing
-            let annotated = mapMaybe getAlts results
+            let patternMatches = mapMaybe getAlts results
             let uniqBinders = DL.nub (map (getNonRecBinder . head . fst)
-                                          annotated)
-            showInfo b dflags reportMode False "SCRUTINIZE"
-                uniqBinders annotated showDetailsCaseMatch
+                                          patternMatches)
 
             -- let constrs = constructingBinders anns bind
             let getConstrs x =
@@ -585,8 +607,20 @@ fusionReport reportMode guts = do
                         _ -> Nothing
             let constrs = mapMaybe getConstrs results
             let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
-            showInfo b dflags reportMode False "CONSTRUCT"
-                uniqConstr constrs showDetailsConstr
+
+            case reportMode of
+                ReportSilent -> return ()
+                ReportWarn -> do
+                    let allBinds = map fst patternMatches ++ map fst constrs
+                    when (not $ null allBinds) $ do
+                        putMsgS "Unfused bindings:"
+                        putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
+                _ -> do
+                    showInfo b dflags reportMode False "SCRUTINIZE"
+                        uniqBinders patternMatches showDetailsCaseMatch
+                    showInfo b dflags reportMode False "CONSTRUCT"
+                        uniqConstr constrs showDetailsConstr
+
         return bind
 
     transformBind _ _ bndr = return bndr
