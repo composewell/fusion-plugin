@@ -557,10 +557,14 @@ markInline reportMode failIt transform guts = do
                 else bind
         return bind'
 
-    transformBind _ _ bndr =
-        -- This is probably wrong, but we don't need it for now.
-        --mapM_ (\(b, expr) -> transformBind dflags anns (NonRec b expr)) bs
-        return bndr
+    transformBind dflags anns (Rec bs) = do
+        fmap Rec (mapM transformAsNonRec bs)
+      where
+        transformAsNonRec (b, expr) = do
+            r <- transformBind dflags anns (NonRec b expr)
+            case r of
+                NonRec b1 expr1 -> return (b1, expr1)
+                _ -> error "Bug: expecting NonRec binder"
 
 -- | Core pass to mark functions scrutinizing constructors marked with Fuse
 fusionMarkInline :: ReportMode -> Bool -> Bool -> CoreToDo
