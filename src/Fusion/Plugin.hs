@@ -600,25 +600,23 @@ fusionReport msg reportMode guts = do
   where
     transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns bind@(NonRec b _) = do
-        let parentName = showSDoc dflags (ppr b)
-        when ("main" `DL.isPrefixOf` parentName) $ do
-            let results = containsAnns anns bind
+        let results = containsAnns anns bind
 
-            let getAlts x =
-                    case x of
-                        (bs, CaseAlt alt) -> Just (bs, alt)
-                        _ -> Nothing
-            let patternMatches = mapMaybe getAlts results
-            let uniqBinders = DL.nub (map (getNonRecBinder . head . fst)
-                                          patternMatches)
+        let getAlts x =
+                case x of
+                    (bs, CaseAlt alt) -> Just (bs, alt)
+                    _ -> Nothing
+        let patternMatches = mapMaybe getAlts results
+        let uniqBinders = DL.nub (map (getNonRecBinder . head . fst)
+                                      patternMatches)
 
-            -- let constrs = constructingBinders anns bind
-            let getConstrs x =
-                    case x of
-                        (bs, Constr con) -> Just (bs, con)
-                        _ -> Nothing
-            let constrs = mapMaybe getConstrs results
-            let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
+        -- let constrs = constructingBinders anns bind
+        let getConstrs x =
+                case x of
+                    (bs, Constr con) -> Just (bs, con)
+                    _ -> Nothing
+        let constrs = mapMaybe getConstrs results
+        let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
 
         -- TBD: For ReportWarn level prepare a single consolidated list of
         -- paths with one entry for each binder and giving one example of what
@@ -626,18 +624,18 @@ fusionReport msg reportMode guts = do
         --
         -- \$sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
         --
-            case reportMode of
-                ReportSilent -> return ()
-                ReportWarn -> do
-                    let allBinds = map fst patternMatches ++ map fst constrs
-                    when (not $ null allBinds) $ do
-                        putMsgS "Unfused bindings:"
-                        putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
-                _ -> do
-                    showInfo b dflags reportMode False "SCRUTINIZE"
-                        uniqBinders patternMatches showDetailsCaseMatch
-                    showInfo b dflags reportMode False "CONSTRUCT"
-                        uniqConstr constrs showDetailsConstr
+        case reportMode of
+            ReportSilent -> return ()
+            ReportWarn -> do
+                let allBinds = map fst patternMatches ++ map fst constrs
+                when (not $ null allBinds) $ do
+                    putMsgS "Unfused bindings:"
+                    putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
+            _ -> do
+                showInfo b dflags reportMode False "SCRUTINIZE"
+                    uniqBinders patternMatches showDetailsCaseMatch
+                showInfo b dflags reportMode False "CONSTRUCT"
+                    uniqConstr constrs showDetailsConstr
 
         return bind
 
