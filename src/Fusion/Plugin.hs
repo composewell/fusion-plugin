@@ -594,11 +594,11 @@ fusionReport msg reportMode guts = do
     putMsgS $ "fusion-plugin: " ++ msg ++ "..."
     dflags <- getDynFlags
     anns <- getAnnotations deserializeWithData guts
-    if (anyUFM (any (== Fuse)) anns)
-    then bindsOnlyPass (mapM (transformBind dflags anns)) guts
-    else return guts
+    when (anyUFM (any (== Fuse)) anns) $
+        mapM_ (transformBind dflags anns) $ mg_binds guts
+    return guts
   where
-    transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
+    transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM ()
     transformBind dflags anns bind@(NonRec b _) = do
         let results = containsAnns anns bind
 
@@ -637,9 +637,8 @@ fusionReport msg reportMode guts = do
                 showInfo b dflags reportMode False "CONSTRUCT"
                     uniqConstr constrs showDetailsConstr
 
-        return bind
-
-    transformBind _ _ bndr = return bndr
+    transformBind dflags anns (Rec bs) =
+        mapM_ (\(b, expr) -> transformBind dflags anns (NonRec b expr)) bs
 
 -------------------------------------------------------------------------------
 -- Dump core passes
