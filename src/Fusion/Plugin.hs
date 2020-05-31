@@ -551,7 +551,7 @@ markInline reportMode failIt transform guts = do
                     uniqConstr constrs showDetailsConstr
 
         let bind' = do
-                let allBinders = uniqPat -- ++ uniqConstr
+                let allBinders = uniqPat ++ uniqConstr
                 if transform && (not $ null allBinders)
                 then setInlineOnBndrs allBinders bind
                 else bind
