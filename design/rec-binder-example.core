@@ -1,0 +1,1042 @@
+
+==================== [6] After Simplifier ====================
+  
+
+-- RHS size: {terms: 30, types: 57, coercions: 14, joins: 0/2}
+$sdrain_sdcN
+  = \ @ a_X8Cu m1_a8Cv ->
+      let { acc_se0W = \ s_a9Ts -> (# s_a9Ts, () #) } in
+      letrec {
+        go_ae0u
+          = \ m2_ae0v ->
+              (m2_ae0v `cast` <Co:3>)
+                (State
+                   Nothing
+                   Nothing
+                   defaultMaxThreads
+                   defaultMaxThreads
+                   Nothing
+                   Nothing
+                   False)
+                (\ _ x_ae0x -> go_ae0u x_ae0x)
+                ((\ _ eta_B1 -> (# eta_B1, () #)) `cast` <Co:5>)
+                (acc_se0W `cast` <Co:3>); } in
+      go_ae0u (m1_a8Cv `cast` <Co:3>)
+
+-- RHS size: {terms: 9, types: 12, coercions: 0, joins: 0/0}
+lvl_sddK
+  = \ @ a_Xdc2 ->
+      State
+        Nothing
+        Nothing
+        defaultMaxThreads
+        defaultMaxThreads
+        Nothing
+        Nothing
+        False
+
+-- RHS size: {terms: 39, types: 68, coercions: 4, joins: 1/1}
+$sdrain_sdEe
+  = \ @ a_Xdc2 ds_adc2 eta_B1 ->
+      case ds_adc2 of { UnStream @ s_adc6 step1_adcf state_adcg ->
+      joinrec {
+        go_sdEd ds1_adc7 st_adc8 eta_XX
+          = case ds1_adc7 of { __DEFAULT ->
+            case ((step1_adcf lvl_sddK st_adc8) `cast` <Co:4>) eta_XX of
+            { (# ipv_aalC, ipv1_aalD #) ->
+            case ipv1_aalD of {
+              Yield ds3_adcn s1_adco -> jump go_sdEd SPEC s1_adco ipv_aalC;
+              Skip s1_adct -> jump go_sdEd SPEC s1_adct ipv_aalC;
+              Stop -> (# ipv_aalC, () #)
+            }
+            }
+            }; } in
+      jump go_sdEd SPEC state_adcg eta_B1
+      }
+
+-- RHS size: {terms: 1, types: 0, coercions: 10, joins: 0/0}
+$sdrain_sdcI = $sdrain_sdEe `cast` <Co:10>
+
+-- RHS size: {terms: 1, types: 0, coercions: 4, joins: 0/0}
+$stoAbsTime_sdbS
+  = $fTimeUnitMilliSecond64_$ctoTimeSpec `cast` <Co:4>
+
+Rec {
+-- RHS size: {terms: 34, types: 28, coercions: 0, joins: 0/0}
+poly_go13_sddH
+  = \ @ a_XalI ds_aalJ ds1_aalK ->
+      case ds_aalJ of ds2_aalL { I# ipv_sdeX ->
+      case ds1_aalK of {
+        Bin ipv_aalO ipv1_aalP ipv2_aalQ ipv3_aalR ipv4_aalS ->
+          case ipv1_aalP of { I# y#_adf9 ->
+          case <# ipv_sdeX y#_adf9 of {
+            __DEFAULT ->
+              case ==# ipv_sdeX y#_adf9 of {
+                __DEFAULT -> poly_go13_sddH ds2_aalL ipv4_aalS;
+                1# -> Just ipv2_aalQ
+              };
+            1# -> poly_go13_sddH ds2_aalL ipv3_aalR
+          }
+          };
+        Tip -> Nothing
+      }
+      }
+end Rec }
+
+-- RHS size: {terms: 1, types: 0, coercions: 0, joins: 0/0}
+$slookup_sdbN = poly_go13_sddH
+
+-- RHS size: {terms: 128, types: 387, coercions: 37, joins: 0/3}
+$sscanlMAfter'_sdbD
+  = \ @ b_Xalx @ a_XajN fstep_aajL initial_aajM done_aajN s_aajO ->
+      case s_aajO of { UnStream @ s1_XalQ step1_aakc state_XamR ->
+      let { state1_sdbG = PScanAfterStep state_XamR initial_aajM } in
+      let {
+        step2_sdEL
+          = \ eta_aakZ eta1_aal0 eta_B1 ->
+              case eta1_aal0 of {
+                Nothing ->
+                  case (initial_aajM `cast` <Co:2>) eta_B1 of
+                  { (# ipv_aalC, ipv1_aalD #) ->
+                  (# ipv_aalC, Yield ipv1_aalD (Just state1_sdbG) #)
+                  };
+                Just st_aal6 ->
+                  case st_aal6 of {
+                    PScanAfterStep st_adaZ acc_adb0 ->
+                      case ((step1_aakc
+                               (case eta_aakZ of
+                                { State ds_aala ds1_aalb ds2_aalc ds3_aald ds4_aale ds5_aalf
+                                        ds6_aalg ->
+                                State Nothing Nothing ds2_aalc ds3_aald ds4_aale ds5_aalf ds6_aalg
+                                })
+                               st_adaZ)
+                            `cast` <Co:4>)
+                             eta_B1
+                      of
+                      { (# ipv_aalC, ipv1_aalD #) ->
+                      case ipv1_aalD of {
+                        Yield x_adbf s2_adbg ->
+                          case (acc_adb0 `cast` <Co:2>) ipv_aalC of
+                          { (# ipv_Xao3, ipv1_Xao5 #) ->
+                          case ipv1_Xao5 of old1_adbj { __DEFAULT ->
+                          case ((fstep_aajL old1_adbj x_adbf) `cast` <Co:2>) ipv_Xao3 of
+                          { (# ipv_Xaob, ipv1_Xaod #) ->
+                          case ipv1_Xaod of y1_adbl { __DEFAULT ->
+                          (# ipv_Xaob,
+                             Skip
+                               (Just
+                                  (PScanAfterYield
+                                     y1_adbl
+                                     (PScanAfterStep
+                                        s2_adbg
+                                        ((\ s_X9W7 -> (# s_X9W7, y1_adbl #)) `cast` <Co:3>)))) #)
+                          }
+                          }
+                          }
+                          };
+                        Skip s2_adbn ->
+                          (# ipv_aalC, Skip (Just (PScanAfterStep s2_adbn acc_adb0)) #);
+                        Stop ->
+                          case (acc_adb0 `cast` <Co:2>) ipv_aalC of
+                          { (# ipv_Xao1, ipv1_Xao3 #) ->
+                          case ipv1_Xao3 of v1_adbs { __DEFAULT ->
+                          case ((done_aajN v1_adbs) `cast` <Co:2>) ipv_Xao1 of
+                          { (# ipv_Xao9, ipv1_Xaob #) ->
+                          case ipv1_Xaob of res1_adbu { __DEFAULT ->
+                          (# ipv_Xao9,
+                             Skip (Just (PScanAfterYield res1_adbu PScanAfterStop)) #)
+                          }
+                          }
+                          }
+                          }
+                      }
+                      };
+                    PScanAfterYield acc_adbw next_adbx ->
+                      (# eta_B1, Yield acc_adbw (Just next_adbx) #);
+                    PScanAfterStop -> (# eta_B1, Stop #)
+                  }
+              } } in
+      let { step2_sdbJ = step2_sdEL `cast` <Co:20> } in
+      UnStream step2_sdbJ Nothing
+      }
+
+-- RHS size: {terms: 7, types: 1, coercions: 0, joins: 0/0}
+lvl_sddk = case $wf 10.0## 6# of v_B2 { __DEFAULT -> D# v_B2 }
+
+-- RHS size: {terms: 2, types: 0, coercions: 0, joins: 0/0}
+lvl_sddl = I# 1000#
+
+-- RHS size: {terms: 40, types: 82, coercions: 8, joins: 0/1}
+$sforkManaged_sdwE
+  = \ action_ad8e s_aalz ->
+      case fork#
+             ((\ eta_adwb ->
+                 catch#
+                   (\ eta1_adwq ->
+                      case (action_ad8e `cast` <Co:5>) eta1_adwq of
+                      { (# ipv_adwt, ipv1_adwu #) ->
+                      (# ipv_adwt, () #)
+                      })
+                   forkIO2
+                   eta_adwb)
+              `cast` <Co:3>)
+             s_aalz
+      of
+      { (# ipv_adwf, ipv1_adwg #) ->
+      let { tid_XdaC = ThreadId ipv1_adwg } in
+      case mkWeak#
+             tid_XdaC
+             tid_XdaC
+             (\ eta2_ad8m ->
+                case killThread# ipv1_adwg killThread2 eta2_ad8m of s1_ad8s
+                { __DEFAULT ->
+                (# s1_ad8s, () #)
+                })
+             ipv_adwf
+      of
+      { (# ipv_ad8v, ipv1_ad8w #) ->
+      (# ipv_ad8v, tid_XdaC #)
+      }
+      }
+
+-- RHS size: {terms: 1, types: 0, coercions: 6, joins: 0/0}
+$sforkManaged_sd9D = $sforkManaged_sdwE `cast` <Co:6>
+
+-- RHS size: {terms: 250, types: 470, coercions: 152, joins: 1/7}
+$stimes_sch8
+  = \ g_aaUA ->
+      let {
+        time_sddn
+          = case g_aaUA of { D# x_ab1f ->
+            case lvl_sddk of { D# v_B2 ->
+            let { x1_sd9z = *## x_ab1f v_B2 } in
+            case >=## x1_sd9z 9.223372036854776e18## of {
+              __DEFAULT ->
+                case <## x1_sd9z 1000.0## of {
+                  __DEFAULT ->
+                    case {__pkg_ccall base-4.13.0.0 Double#
+                           -> State# RealWorld -> (# State# RealWorld, Double# #)}_ab1j
+                           x1_sd9z realWorld#
+                    of
+                    { (# ds2_ab1m, ds3_ab1n #) ->
+                    I# (double2Int# ds3_ab1n)
+                    };
+                  1# -> lvl_sddl
+                };
+              1# -> maxInt
+            }
+            }
+            } } in
+      let {
+        $sstep_sdGl
+          = \ @ p_XaVj _ eta1_aaVh eta_B1 ->
+              case eta1_aaVh of wild_aaVj {
+                Nothing ->
+                  case newByteArray# 8# (eta_B1 `cast` <Co:16>) of
+                  { (# ipv_ab04, ipv1_ab05 #) ->
+                  case writeInt64Array# ipv1_ab05 0# 0# ipv_ab04 of s2#_ab07
+                  { __DEFAULT ->
+                  case ((getTime Monotonic) `cast` <Co:2>) (s2#_ab07 `cast` <Co:15>)
+                  of
+                  { (# ipv_ab0M, ipv1_ab0N #) ->
+                  case readInt64Array# ipv1_ab05 0# (ipv_ab0M `cast` <Co:3>) of
+                  { (# ipv2_ab0V, ipv3_ab0W #) ->
+                  case ipv1_ab0N `cast` <Co:1> of { TimeSpec dt_ab11 dt1_ab12 ->
+                  case divInt# dt1_ab12 1000# of ww4_ab14 { __DEFAULT ->
+                  case writeInt64Array#
+                         ipv1_ab05 0# (+# (*# dt_ab11 1000000#) ww4_ab14) ipv2_ab0V
+                  of s'#_ab15
+                  { __DEFAULT ->
+                  letrec {
+                    a'_sd9s
+                      = \ s_ab19 ->
+                          case {__pkg_ccall base-4.13.0.0 State# RealWorld
+                           -> (# State# RealWorld, Int# #)}_ab1q
+                                 realWorld#
+                          of
+                          { (# ds_ab1w, ds1_ab1x #) ->
+                          join {
+                            $j_sd9v ipv_ab1u _
+                              = case ((getTime Monotonic) `cast` <Co:2>) ipv_ab1u of
+                                { (# ipv2_ab1B, ipv3_ab1C #) ->
+                                case readInt64Array# ipv1_ab05 0# (ipv2_ab1B `cast` <Co:3>) of
+                                { (# ipv4_ab1K, ipv5_ab1L #) ->
+                                case ipv3_ab1C `cast` <Co:1> of { TimeSpec dt_ab1P dt1_ab1Q ->
+                                case divInt# dt1_ab1Q 1000# of ww4_ab1S { __DEFAULT ->
+                                case writeInt64Array#
+                                       ipv1_ab05 0# (+# (*# dt_ab1P 1000000#) ww4_ab1S) ipv4_ab1K
+                                of s'#_ab1T
+                                { __DEFAULT ->
+                                a'_sd9s (s'#_ab1T `cast` <Co:2>)
+                                }
+                                }
+                                }
+                                }
+                                } } in
+                          case ds1_ab1x of {
+                            __DEFAULT ->
+                              case threadDelay1 time_sddn s_ab19 of
+                              { (# ipv_ab3S, ipv1_ab3T #) ->
+                              jump $j_sd9v ipv_ab3S ipv1_ab3T
+                              };
+                            0# ->
+                              case time_sddn of { I# time#_ab3X ->
+                              case delay# time#_ab3X s_ab19 of s'_ab3Z { __DEFAULT ->
+                              jump $j_sd9v s'_ab3Z ()
+                              }
+                              }
+                          }
+                          }; } in
+                  case fork#
+                         ((\ eta_adwb ->
+                             catch#
+                               (\ eta1_adwq ->
+                                  case (a'_sd9s eta1_adwq) `cast` <Co:15> of
+                                  { (# ipv_adwt, ipv1_adwu #) ->
+                                  (# ipv_adwt, () #)
+                                  })
+                               forkIO2
+                               eta_adwb)
+                          `cast` <Co:3>)
+                         (s'#_ab15 `cast` <Co:2>)
+                  of
+                  { (# ipv_adwf, ipv1_adwg #) ->
+                  let { tid_Xdbr = ThreadId ipv1_adwg } in
+                  case mkWeak#
+                         tid_Xdbr
+                         tid_Xdbr
+                         (\ eta2_ad8m ->
+                            case killThread# ipv1_adwg killThread2 eta2_ad8m of s1_ad8s
+                            { __DEFAULT ->
+                            (# s1_ad8s, () #)
+                            })
+                         ipv_adwf
+                  of
+                  { (# ipv_ad8v, ipv1_ad8w #) ->
+                  case readInt64Array# ipv1_ab05 0# (ipv_ad8v `cast` <Co:14>) of
+                  { (# ipv_ad87, ipv1_ad88 #) ->
+                  (# ipv_ad87 `cast` <Co:13>,
+                     Skip (Just (Var ipv1_ab05, tid_Xdbr, I64# ipv1_ad88)) #)
+                  }
+                  }
+                  }
+                  }
+                  }
+                  }
+                  }
+                  }
+                  }
+                  };
+                Just ds_abgd ->
+                  case ds_abgd of { (timeVar_abgh, ds1_abgi, t0_abgj) ->
+                  case timeVar_abgh of { Var arr#_abgn ->
+                  case readInt64Array# arr#_abgn 0# (eta_B1 `cast` <Co:14>) of
+                  { (# ipv_ad87, ipv1_ad88 #) ->
+                  (# ipv_ad87 `cast` <Co:13>,
+                     Yield
+                       (case t0_abgj of { I64# ww1_abgs ->
+                        case $w$cdivMod2 ww1_abgs 1000000# of { (# ww5_abgw, ww6_abgx #) ->
+                        case ww6_abgx of { I64# x#_abgB ->
+                        case ww5_abgw of { I64# dt1_abgF ->
+                        (TimeSpec dt1_abgF (*# x#_abgB 1000#)) `cast` <Co:2>
+                        }
+                        }
+                        }
+                        },
+                        case t0_abgj of { I64# y#_abgN ->
+                        (I64# (*# (-# ipv1_ad88 y#_abgN) 1000#)) `cast` <Co:5>
+                        })
+                       wild_aaVj #)
+                  }
+                  }
+                  }
+              } } in
+      let { $sstep_sd9p = $sstep_sdGl `cast` <Co:26> } in
+      UnStream $sstep_sd9p Nothing
+
+-- RHS size: {terms: 114, types: 356, coercions: 38, joins: 0/2}
+$szipWithM_sceH
+  = \ @ a_Xau8 @ b_Xaua @ c_Xauc f_aau8 ds_aau9 ds1_aaua ->
+      case ds_aau9 of { UnStream @ s_aaud step1_aaue state_aauf ->
+      case ds1_aaua of { UnStream @ s1_aaum step2_aaus state1_aaut ->
+      let {
+        step_sdJc
+          = \ @ m1_aauo @ a1_aaup eta_aauq eta1_aaur eta_B1 ->
+              case eta1_aaur of { (sa_aaux, sb_aauy, ds2_aauz) ->
+              case ds2_aauz of {
+                Nothing ->
+                  case ((step1_aaue
+                           (case eta_aauq of
+                            { State ds3_aauG ds4_aauH ds5_aauI ds6_aauJ ds7_aauK ds8_aauL
+                                    ds9_aauM ->
+                            State Nothing Nothing ds5_aauI ds6_aauJ ds7_aauK ds8_aauL ds9_aauM
+                            })
+                           sa_aaux)
+                        `cast` <Co:4>)
+                         eta_B1
+                  of
+                  { (# ipv_aalC, ipv1_aalD #) ->
+                  (# ipv_aalC,
+                     case ipv1_aalD of {
+                       Yield x_aauR sa'_aauS -> Skip (sa'_aauS, sb_aauy, Just x_aauR);
+                       Skip sa'_aauV -> Skip (sa'_aauV, sb_aauy, Nothing);
+                       Stop -> Stop
+                     } #)
+                  };
+                Just x_aauZ ->
+                  case ((step2_aaus
+                           (case eta_aauq of
+                            { State ds3_aav3 ds4_aav4 ds5_aav5 ds6_aav6 ds7_aav7 ds8_aav8
+                                    ds9_aav9 ->
+                            State Nothing Nothing ds5_aav5 ds6_aav6 ds7_aav7 ds8_aav8 ds9_aav9
+                            })
+                           sb_aauy)
+                        `cast` <Co:4>)
+                         eta_B1
+                  of
+                  { (# ipv_aalC, ipv1_aalD #) ->
+                  case ipv1_aalD of {
+                    Yield y_aave sb'_aavf ->
+                      case ((f_aau8 x_aauZ y_aave) `cast` <Co:2>) ipv_aalC of
+                      { (# ipv_XaoF, ipv1_XaoH #) ->
+                      (# ipv_XaoF, Yield ipv1_XaoH (sa_aaux, sb'_aavf, Nothing) #)
+                      };
+                    Skip sb'_aavj ->
+                      (# ipv_aalC, Skip (sa_aaux, sb'_aavj, Just x_aauZ) #);
+                    Stop -> (# ipv_aalC, Stop #)
+                  }
+                  }
+              }
+              } } in
+      let { step_sceJ = step_sdJc `cast` <Co:28> } in
+      UnStream step_sceJ (state_aauf, state1_aaut, Nothing)
+      }
+      }
+
+-- RHS size: {terms: 102, types: 384, coercions: 41, joins: 0/2}
+$sconcatAp_scdE
+  = \ @ a_Xawb @ b_Xawd ds_aawb ds1_aawc ->
+      case ds_aawb of { UnStream @ s_aawf step1_aawg state_aawh ->
+      case ds1_aawc of { UnStream @ s1_aawo step2_aawu state1_Xay4 ->
+      let {
+        step'_sdJQ
+          = \ @ m_aawq @ a1_aawr eta_aaws eta1_aawt eta_B1 ->
+              case eta1_aawt of {
+                Left st_aawz ->
+                  case ((step1_aawg
+                           (case eta_aaws of
+                            { State ds2_aawN ds3_aawO ds4_aawP ds5_aawQ ds6_aawR ds7_aawS
+                                    ds8_aawT ->
+                            State Nothing Nothing ds4_aawP ds5_aawQ ds6_aawR ds7_aawS ds8_aawT
+                            })
+                           st_aawz)
+                        `cast` <Co:5>)
+                         eta_B1
+                  of
+                  { (# ipv_a9TF, ipv1_a9TG #) ->
+                  (# ipv_a9TF,
+                     case ipv1_a9TG of {
+                       Yield f1_aawE s2_aawF ->
+                         Skip (Right (f1_aawE, s2_aawF, state1_Xay4));
+                       Skip s2_aawI -> Skip (Left s2_aawI);
+                       Stop -> Stop
+                     } #)
+                  };
+                Right ds2_aawW ->
+                  case ds2_aawW of { (f1_aax0, os_aax1, st_aax2) ->
+                  case ((step2_aawu
+                           (case eta_aaws of
+                            { State ds3_aaxh ds4_aaxi ds5_aaxj ds6_aaxk ds7_aaxl ds8_aaxm
+                                    ds9_aaxn ->
+                            State Nothing Nothing ds5_aaxj ds6_aaxk ds7_aaxl ds8_aaxm ds9_aaxn
+                            })
+                           st_aax2)
+                        `cast` <Co:4>)
+                         eta_B1
+                  of
+                  { (# ipv_a9TF, ipv1_a9TG #) ->
+                  (# ipv_a9TF,
+                     case ipv1_a9TG of {
+                       Yield a2_aax7 s2_aax8 ->
+                         Yield (f1_aax0 a2_aax7) (Right (f1_aax0, os_aax1, s2_aax8));
+                       Skip s2_aaxb -> Skip (Right (f1_aax0, os_aax1, s2_aaxb));
+                       Stop -> Skip (Left os_aax1)
+                     } #)
+                  }
+                  }
+              } } in
+      let { step'_scdG = step'_sdJQ `cast` <Co:32> } in
+      UnStream step'_scdG (Left state_aawh)
+      }
+      }
+
+-- RHS size: {terms: 56, types: 172, coercions: 26, joins: 0/2}
+$smapM_sccx
+  = \ @ a_XaiO @ b_XaiQ f_aaiO ds_aaiP ->
+      case ds_aaiP of { UnStream @ s_aaiV step1_aaj1 state_aaj2 ->
+      let {
+        step'_sdBy
+          = \ @ m1_aaiX @ a1_aaiY eta_aaiZ eta1_aaj0 s_aalz ->
+              case ((step1_aaj1
+                       (case eta_aaiZ of
+                        { State ds1_aaj6 ds2_aaj7 ds3_aaj8 ds4_aaj9 ds5_aaja ds6_aajb
+                                ds7_aajc ->
+                        State Nothing Nothing ds3_aaj8 ds4_aaj9 ds5_aaja ds6_aajb ds7_aajc
+                        })
+                       eta1_aaj0)
+                    `cast` <Co:4>)
+                     s_aalz
+              of
+              { (# ipv_aalC, ipv1_aalD #) ->
+              case ipv1_aalD of {
+                Yield x_aajh s1_aaji ->
+                  case ((f_aaiO x_aajh) `cast` <Co:2>) ipv_aalC of
+                  { (# ipv_Xaom, ipv1_Xaoo #) ->
+                  (# ipv_Xaom, Yield ipv1_Xaoo s1_aaji #)
+                  };
+                Skip s1_aajm -> (# ipv_aalC, Skip s1_aajm #);
+                Stop -> (# ipv_aalC, Stop #)
+              }
+              } } in
+      let { step'_sccz = step'_sdBy `cast` <Co:20> } in
+      UnStream step'_sccz state_aaj2
+      }
+
+-- RHS size: {terms: 5, types: 19, coercions: 0, joins: 0/0}
+lvl_sdBO = \ @ a_Xaju s_X9XY -> (# s_X9XY, Stop #)
+
+-- RHS size: {terms: 7, types: 19, coercions: 0, joins: 0/0}
+lvl_sdd1 = \ @ a_Xaju @ r_aajz _ _ _ stp_aajD -> stp_aajD
+
+-- RHS size: {terms: 8, types: 21, coercions: 4, joins: 0/0}
+lvl_sdBP
+  = \ @ a_Xaju a1_aajy s_X9VL ->
+      (# s_X9VL, Yield a1_aajy (lvl_sdd1 `cast` <Co:4>) #)
+
+-- RHS size: {terms: 9, types: 23, coercions: 0, joins: 0/0}
+lvl_sdBQ
+  = \ @ a_XalP a1_aajw x_aajx s_X9VQ ->
+      (# s_X9VQ, Yield a1_aajw x_aajx #)
+
+-- RHS size: {terms: 8, types: 17, coercions: 32, joins: 0/0}
+lvl_sdd4
+  = \ @ a_XalU gst_aaju m1_aajv ->
+      (m1_aajv `cast` <Co:3>)
+        gst_aaju
+        (lvl_sdBQ `cast` <Co:13>)
+        (lvl_sdBP `cast` <Co:9>)
+        (lvl_sdBO `cast` <Co:7>)
+
+-- RHS size: {terms: 3, types: 8, coercions: 0, joins: 0/0}
+$sfromStreamK_scc1 = \ @ a_XalV -> UnStream lvl_sdd4
+
+-- RHS size: {terms: 65, types: 153, coercions: 38, joins: 1/3}
+$stoStreamK_sdKE
+  = \ @ a_X9TP ds_a9TP @ r_adcX eta_B5 eta_B4 eta_B3 eta_B2 eta_B1 ->
+      case ds_a9TP of { UnStream @ s_a9U0 step1_a9Ug state_a9Us ->
+      letrec {
+        go_sdKD
+          = \ st_a9U2 @ r_a9U3 st1_a9U4 yld_a9U5 _ stp_a9U7 eta_X1v ->
+              let {
+                lvl_sdcY
+                  = case st1_a9U4 of
+                    { State ds1_a9Ux ds2_a9UE ds3_a9UI ds4_a9UP ds5_a9UQ ds6_a9UU
+                            ds7_a9UY ->
+                    State Nothing Nothing ds3_a9UI ds4_a9UP ds5_a9UQ ds6_a9UU ds7_a9UY
+                    } } in
+              joinrec {
+                go'_sdBV ss_a9U9 s_aalz
+                  = case ((step1_a9Ug lvl_sdcY ss_a9U9) `cast` <Co:4>) s_aalz of
+                    { (# ipv_aalC, ipv1_aalD #) ->
+                    case ipv1_aalD of {
+                      Yield x_a9V6 s1_a9V7 ->
+                        ((yld_a9U5 x_a9V6 ((go_sdKD s1_a9V7) `cast` <Co:30>))
+                         `cast` <Co:2>)
+                          ipv_aalC;
+                      Skip s1_a9Va -> jump go'_sdBV s1_a9Va ipv_aalC;
+                      Stop -> (stp_a9U7 `cast` <Co:2>) ipv_aalC
+                    }
+                    }; } in
+              jump go'_sdBV st_a9U2 eta_X1v; } in
+      go_sdKD state_a9Us eta_B5 eta_B4 eta_B3 eta_B2 eta_B1
+      }
+
+-- RHS size: {terms: 1, types: 0, coercions: 37, joins: 0/0}
+$stoStreamK_scbQ = $stoStreamK_sdKE `cast` <Co:37>
+
+-- RHS size: {terms: 32, types: 58, coercions: 12, joins: 0/2}
+$senumerateFromStepIntegral_scbD
+  = \ from_aaTT stride_aaTU ->
+      let {
+        $sstep_sdKL
+          = \ @ p_XaU6 _ eta1_aaU3 eta_B1 ->
+              case eta1_aaU3 of x_aaU4 { I# ipv_sdC2 ->
+              (# eta_B1,
+                 case stride_aaTU of { I# y_adCc ->
+                 Yield x_aaU4 (I# (+# ipv_sdC2 y_adCc))
+                 } #)
+              } } in
+      let { $sstep_scbL = $sstep_sdKL `cast` <Co:12> } in
+      case from_aaTT of from1_aaU6 { I# ipv_sdCw ->
+      case stride_aaTU of { I# ipv_sdCz ->
+      UnStream $sstep_scbL from1_aaU6
+      }
+      }
+
+-- RHS size: {terms: 58, types: 153, coercions: 18, joins: 0/2}
+$stakeWhileM_scbp
+  = \ @ a_XaT1 f_aaT1 ds_aaT2 ->
+      case ds_aaT2 of { UnStream @ s_aaT6 step1_aaTa state_aaTb ->
+      let {
+        step'_sdD2
+          = \ eta_aaT8 eta1_aaT9 s_aalz ->
+              case ((step1_aaTa
+                       (case eta_aaT8 of
+                        { State ds1_aaTf ds2_aaTg ds3_aaTh ds4_aaTi ds5_aaTj ds6_aaTk
+                                ds7_aaTl ->
+                        State Nothing Nothing ds3_aaTh ds4_aaTi ds5_aaTj ds6_aaTk ds7_aaTl
+                        })
+                       eta1_aaT9)
+                    `cast` <Co:4>)
+                     s_aalz
+              of
+              { (# ipv_aalC, ipv1_aalD #) ->
+              case ipv1_aalD of {
+                Yield x_aaTq s1_aaTr ->
+                  case ((f_aaT1 x_aaTq) `cast` <Co:2>) ipv_aalC of
+                  { (# ipv_XaoE, ipv1_XaoG #) ->
+                  (# ipv_XaoE,
+                     case ipv1_XaoG of {
+                       False -> Stop;
+                       True -> Yield x_aaTq s1_aaTr
+                     } #)
+                  };
+                Skip s1_aaTz -> (# ipv_aalC, Skip s1_aaTz #);
+                Stop -> (# ipv_aalC, Stop #)
+              }
+              } } in
+      let { step'_scbr = step'_sdD2 `cast` <Co:12> } in
+      UnStream step'_scbr state_aaTb
+      }
+
+-- RHS size: {terms: 40, types: 69, coercions: 4, joins: 0/0}
+initial_se8a
+  = \ s_X9W6 ->
+      (# s_X9W6,
+         case $w$cdivMod2 0# 1000# of { (# ww5_aaUr, ww6_aaUs #) ->
+         case ww6_aaUs of { I64# x#_adeU ->
+         case ww5_aaUr of { I64# dt_aatp ->
+         case $w$cdivMod2 0# 1000# of { (# ww5_XaWj, ww6_XaWl #) ->
+         case ww6_XaWl of { I64# x#_XdgT ->
+         case ww5_XaWj of { I64# dt_Xavt ->
+         SessionState
+           ((TimeSpec dt_aatp (*# x#_adeU 1000000#)) `cast` <Co:2>)
+           ((TimeSpec dt_Xavt (*# x#_XdgT 1000000#)) `cast` <Co:2>)
+           0#
+           Empty
+           Tip
+           []
+         }
+         }
+         }
+         }
+         }
+         } #)
+
+-- RHS size: {terms: 2, types: 0, coercions: 0, joins: 0/0}
+state1_aawv = I# 1#
+
+-- RHS size: {terms: 2, types: 0, coercions: 0, joins: 0/0}
+state_se9v = I# 1#
+
+-- RHS size: {terms: 2, types: 8, coercions: 0, joins: 0/0}
+state_secJ = Left state_se9v
+
+-- RHS size: {terms: 4, types: 29, coercions: 0, joins: 0/0}
+state_aakd = (state_secJ, Nothing, Nothing)
+
+-- RHS size: {terms: 3, types: 36, coercions: 16, joins: 0/0}
+state1_aakW
+  = PScanAfterStep state_aakd (initial_se8a `cast` <Co:16>)
+
+Rec {
+-- RHS size: {terms: 499, types: 2,118, coercions: 212, joins: 3/7}
+go_sfCY
+  = \ ds1_adc7 st_adc8 eta_B1 ->
+      case ds1_adc7 of { __DEFAULT ->
+      case st_adc8 of {
+        Nothing ->
+          case initial_se8a eta_B1 of { (# ipv_aalC, ipv1_aalD #) ->
+          go_sfCY SPEC (Just state1_aakW) ipv_aalC
+          };
+        Just st_ada1 ->
+          case st_ada1 of {
+            PScanAfterStep st1_ada5 acc_ada6 ->
+              case st1_ada5 of { (sa_acdN, sb_acdO, ds3_acdP) ->
+              join {
+                $j_seid ipv_aalC ipv1_aalD
+                  = case ipv1_aalD of {
+                      Yield x_adal s2_adam ->
+                        case (acc_ada6 `cast` <Co:15>) ipv_aalC of
+                        { (# ipv_XapT, ipv1_XapV #) ->
+                        case ipv1_XapV of old1_adap
+                        { SessionState ipv_sehD ipv_sehE ipv_sehF ipv_sehG ipv_sehH
+                                       ipv_sehI ->
+                        case x_adal of {
+                          InpJust ds7_a9CK ->
+                            case ds7_a9CK of { (key_sddS, value_sddT, timestamp_sddU) ->
+                            case poly_go13_sddH key_sddS ipv_sehH of {
+                              Nothing ->
+                                case timestamp_sddU `cast` <Co:1> of
+                                { TimeSpec ipv_sdDq ipv_sdDr ->
+                                go_sfCY
+                                  SPEC
+                                  (Just
+                                     (PScanAfterYield
+                                        old1_adap
+                                        (PScanAfterStep
+                                           s2_adam
+                                           ((\ s_a9Ts -> (# s_a9Ts, old1_adap #)) `cast` <Co:16>))))
+                                  ipv_XapT
+                                };
+                              Just ds8_a9CZ ->
+                                case ds8_a9CZ of { Tuple' ds9_a9D6 acc_a9D7 ->
+                                case timestamp_sddU `cast` <Co:1> of
+                                { TimeSpec ipv_sdDq ipv_sdDr ->
+                                go_sfCY
+                                  SPEC
+                                  (Just
+                                     (PScanAfterYield
+                                        old1_adap
+                                        (PScanAfterStep
+                                           s2_adam
+                                           ((\ s_a9Ts -> (# s_a9Ts, old1_adap #)) `cast` <Co:16>))))
+                                  ipv_XapT
+                                }
+                                }
+                            }
+                            };
+                          InpNothing ->
+                            go_sfCY
+                              SPEC
+                              (Just
+                                 (PScanAfterYield
+                                    old1_adap
+                                    (PScanAfterStep
+                                       s2_adam
+                                       ((\ s_a9Ts -> (# s_a9Ts, old1_adap #)) `cast` <Co:16>))))
+                              ipv_XapT
+                        }
+                        }
+                        };
+                      Skip s2_adat ->
+                        go_sfCY SPEC (Just (PScanAfterStep s2_adat acc_ada6)) ipv_aalC;
+                      Stop ->
+                        case (acc_ada6 `cast` <Co:15>) ipv_aalC of
+                        { (# ipv_XapR, ipv1_XapT #) ->
+                        case ipv1_XapT of v1_aday
+                        { SessionState ipv_sei5 ipv_sei6 ipv_sei7 ipv_sei8 ipv_sei9
+                                       ipv_seia ->
+                        go_sfCY
+                          SPEC (Just (PScanAfterYield v1_aday PScanAfterStop)) ipv_XapR
+                        }
+                        }
+                    } } in
+              case ds3_acdP of {
+                Nothing ->
+                  case sa_acdN of {
+                    Left st_accK ->
+                      case st_accK of x1_acby { I# ipv_se8p ->
+                      case <=# ipv_se8p 1000# of {
+                        __DEFAULT -> jump $j_seid eta_B1 Stop;
+                        1# ->
+                          jump $j_seid
+                            eta_B1
+                            (Skip
+                               (Right ((,) x1_acby, I# (+# ipv_se8p 1#), state1_aawv), sb_acdO,
+                                Nothing))
+                      }
+                      };
+                    Right ds3_acd7 ->
+                      case ds3_acd7 of { (f1_acdb, os_acdc, st_acdd) ->
+                      case st_acdd of x1_acby { I# ipv_se8U ->
+                      case <=# ipv_se8U 100# of {
+                        __DEFAULT ->
+                          jump $j_seid eta_B1 (Skip (Left os_acdc, sb_acdO, Nothing));
+                        1# ->
+                          jump $j_seid
+                            eta_B1
+                            (Skip
+                               (Right (f1_acdb, os_acdc, I# (+# ipv_se8U 1#)), sb_acdO,
+                                Just (f1_acdb x1_acby)))
+                      }
+                      }
+                      }
+                  };
+                Just x_acef ->
+                  join {
+                    $j_seaY ipv_aalC ipv1_aalD
+                      = case ipv1_aalD of {
+                          Yield x_accm s1_accn ->
+                            jump $j_seid
+                              ipv_aalC
+                              (Yield
+                                 (case x_acef of { (k_a25i, a_a25j) ->
+                                  InpJust
+                                    (k_a25i, a_a25j,
+                                     case x_accm of { (x_aate, ds_aatf) ->
+                                     case x_aate `cast` <Co:1> of { TimeSpec dt_aats dt1_aatt ->
+                                     case ds_aatf `cast` <Co:3> of { I64# y#_aatz ->
+                                     case $w$cdivMod2 (+# dt1_aatt y#_aatz) 1000000000# of
+                                     { (# ww5_aaUr, ww6_aaUs #) ->
+                                     case ww5_aaUr of { I64# y#1_aatI ->
+                                     case ww6_aaUs of { I64# dt_aatq ->
+                                     (TimeSpec (+# dt_aats y#1_aatI) dt_aatq) `cast` <Co:2>
+                                     }
+                                     }
+                                     }
+                                     }
+                                     }
+                                     })
+                                  })
+                                 (sa_acdN, s1_accn, Nothing));
+                          Skip s1_accr ->
+                            jump $j_seid ipv_aalC (Skip (sa_acdN, s1_accr, Just x_acef));
+                          Stop -> jump $j_seid ipv_aalC Stop
+                        } } in
+                  case sb_acdO of wild_aceR {
+                    Nothing ->
+                      case newByteArray# 8# (eta_B1 `cast` <Co:16>) of
+                      { (# ipv_aceX, ipv1_aceY #) ->
+                      case writeInt64Array# ipv1_aceY 0# 0# ipv_aceX of s2#_acf0
+                      { __DEFAULT ->
+                      case ((getTime Monotonic) `cast` <Co:2>) (s2#_acf0 `cast` <Co:15>)
+                      of
+                      { (# ipv_acf5, ipv1_acf6 #) ->
+                      case readInt64Array# ipv1_aceY 0# (ipv_acf5 `cast` <Co:3>) of
+                      { (# ipv2_acfe, ipv3_acff #) ->
+                      case ipv1_acf6 `cast` <Co:1> of { TimeSpec dt_acfj dt1_acfk ->
+                      case divInt# dt1_acfk 1000# of ww4_acfm { __DEFAULT ->
+                      case writeInt64Array#
+                             ipv1_aceY 0# (+# (*# dt_acfj 1000000#) ww4_acfm) ipv2_acfe
+                      of s'#_acfn
+                      { __DEFAULT ->
+                      letrec {
+                        a'_acfo
+                          = \ s_acfp ->
+                              let {
+                                time_acfq
+                                  = case $wf 10.0## 6# of ww_acft { __DEFAULT ->
+                                    let { x1_acfu = *## 1.0e-2## ww_acft } in
+                                    case >=## x1_acfu 9.223372036854776e18## of {
+                                      __DEFAULT ->
+                                        case <## x1_acfu 1000.0## of {
+                                          __DEFAULT ->
+                                            case {__pkg_ccall base-4.13.0.0 Double#
+                           -> State# RealWorld -> (# State# RealWorld, Double# #)}_acfz
+                                                   x1_acfu realWorld#
+                                            of
+                                            { (# ds2_acfC, ds3_acfD #) ->
+                                            I# (double2Int# ds3_acfD)
+                                            };
+                                          1# -> I# 1000#
+                                        };
+                                      1# -> maxInt
+                                    }
+                                    } } in
+                              case {__pkg_ccall base-4.13.0.0 State# RealWorld
+                           -> (# State# RealWorld, Int# #)}_acfF
+                                     realWorld#
+                              of
+                              { (# ds2_acfL, ds3_acfM #) ->
+                              join {
+                                $j_acfI ipv_acfJ _
+                                  = case ((getTime Monotonic) `cast` <Co:2>) ipv_acfJ of
+                                    { (# ipv2_acfQ, ipv3_acfR #) ->
+                                    case readInt64Array# ipv1_aceY 0# (ipv2_acfQ `cast` <Co:3>) of
+                                    { (# ipv4_acfZ, ipv5_acg0 #) ->
+                                    case ipv3_acfR `cast` <Co:1> of { TimeSpec dt_acg4 dt1_acg5 ->
+                                    case divInt# dt1_acg5 1000# of ww4_acg7 { __DEFAULT ->
+                                    case writeInt64Array#
+                                           ipv1_aceY
+                                           0#
+                                           (+# (*# dt_acg4 1000000#) ww4_acg7)
+                                           ipv4_acfZ
+                                    of s'#_acg8
+                                    { __DEFAULT ->
+                                    a'_acfo (s'#_acg8 `cast` <Co:2>)
+                                    }
+                                    }
+                                    }
+                                    }
+                                    } } in
+                              case ds3_acfM of {
+                                __DEFAULT ->
+                                  case threadDelay1 time_acfq s_acfp of
+                                  { (# ipv_acgc, ipv1_acgd #) ->
+                                  jump $j_acfI ipv_acgc ipv1_acgd
+                                  };
+                                0# ->
+                                  case time_acfq of { I# time#_acgh ->
+                                  case delay# time#_acgh s_acfp of s'_acgj { __DEFAULT ->
+                                  jump $j_acfI s'_acgj ()
+                                  }
+                                  }
+                              }
+                              }; } in
+                      case fork#
+                             ((\ eta_adwb ->
+                                 catch#
+                                   (\ eta1_adwq ->
+                                      case (a'_acfo eta1_adwq) `cast` <Co:15> of
+                                      { (# ipv_adwt, ipv1_adwu #) ->
+                                      (# ipv_adwt, () #)
+                                      })
+                                   forkIO2
+                                   eta_adwb)
+                              `cast` <Co:3>)
+                             (s'#_acfn `cast` <Co:2>)
+                      of
+                      { (# ipv_adwf, ipv1_adwg #) ->
+                      let { tid_ad8k = ThreadId ipv1_adwg } in
+                      case mkWeak#
+                             tid_ad8k
+                             tid_ad8k
+                             (\ eta2_ad8m ->
+                                case killThread# ipv1_adwg killThread2 eta2_ad8m of s1_ad8s
+                                { __DEFAULT ->
+                                (# s1_ad8s, () #)
+                                })
+                             ipv_adwf
+                      of
+                      { (# ipv_ad8v, ipv1_ad8w #) ->
+                      case readInt64Array# ipv1_aceY 0# (ipv_ad8v `cast` <Co:14>) of
+                      { (# ipv_ad87, ipv1_ad88 #) ->
+                      jump $j_seaY
+                        (ipv_ad87 `cast` <Co:13>)
+                        (Skip (Just (Var ipv1_aceY, tid_ad8k, I64# ipv1_ad88)))
+                      }
+                      }
+                      }
+                      }
+                      }
+                      }
+                      }
+                      }
+                      }
+                      };
+                    Just ds2_acgr ->
+                      case ds2_acgr of { (timeVar_acgv, ds3_acgw, t0_acgx) ->
+                      case timeVar_acgv of { Var arr#_acgB ->
+                      case readInt64Array# arr#_acgB 0# (eta_B1 `cast` <Co:14>) of
+                      { (# ipv_ad87, ipv1_ad88 #) ->
+                      jump $j_seaY
+                        (ipv_ad87 `cast` <Co:13>)
+                        (Yield
+                           (case t0_acgx of { I64# ww1_acgG ->
+                            case $w$cdivMod2 ww1_acgG 1000000# of { (# ww5_acgK, ww6_acgL #) ->
+                            case ww6_acgL of { I64# x#_acgP ->
+                            case ww5_acgK of { I64# dt1_acgT ->
+                            (TimeSpec dt1_acgT (*# x#_acgP 1000#)) `cast` <Co:2>
+                            }
+                            }
+                            }
+                            },
+                            case t0_acgx of { I64# y#_ach1 ->
+                            (I64# (*# (-# ipv1_ad88 y#_ach1) 1000#)) `cast` <Co:5>
+                            })
+                           wild_aceR)
+                      }
+                      }
+                      }
+                  }
+              }
+              };
+            PScanAfterYield acc_adaC next_adaD ->
+              go_sfCY SPEC (Just next_adaD) eta_B1;
+            PScanAfterStop -> (# eta_B1, () #)
+          }
+      }
+      }
+end Rec }
+
+-- RHS size: {terms: 3, types: 37, coercions: 0, joins: 0/0}
+main_sfJL = go_sfCY SPEC Nothing
+
+-- RHS size: {terms: 1, types: 0, coercions: 3, joins: 0/0}
+main = main_sfJL `cast` <Co:3>
+
+-- RHS size: {terms: 2, types: 1, coercions: 3, joins: 0/0}
+main_sc9g = runMainIO1 (main_sfJL `cast` <Co:3>)
+
+-- RHS size: {terms: 1, types: 0, coercions: 3, joins: 0/0}
+main = main_sc9g `cast` <Co:3>
+
+-- RHS size: {terms: 1, types: 0, coercions: 0, joins: 0/0}
+$trModule_sc9h = "main"#
+
+-- RHS size: {terms: 2, types: 0, coercions: 0, joins: 0/0}
+$trModule_sc9i = TrNameS $trModule_sc9h
+
+-- RHS size: {terms: 1, types: 0, coercions: 0, joins: 0/0}
+$trModule_sc9j = "Main"#
+
+-- RHS size: {terms: 2, types: 0, coercions: 0, joins: 0/0}
+$trModule_sc9k = TrNameS $trModule_sc9j
+
+-- RHS size: {terms: 3, types: 0, coercions: 0, joins: 0/0}
+$trModule = Module $trModule_sc9i $trModule_sc9k
+
+
+------ Local rules for imported ids --------
+"SPEC/Main takeWhileM @ IO _" [1]
+    forall @ a_aaSZ $dMonad_scbo.
+      takeWhileM $dMonad_scbo
+      = $stakeWhileM_scbp
+"SPEC/Main enumerateFromStepIntegral @ Int @ IO" [1]
+    forall $dMonad_scbC $dIntegral_scbB.
+      enumerateFromStepIntegral $dIntegral_scbB $dMonad_scbC
+      = $senumerateFromStepIntegral_scbD
+"SPEC/Main toStreamK @ IO _" [0]
+    forall @ a_a9TN $dMonad_scbP.
+      toStreamK $dMonad_scbP
+      = $stoStreamK_scbQ
+"SPEC/Main fromStreamK @ IO _" [0]
+    forall @ a_aajs $dMonad_scc0.
+      fromStreamK $dMonad_scc0
+      = $sfromStreamK_scc1
+"SPEC/Main mapM @ IO _ _" [1]
+    forall @ a_aaiL @ b_aaiM $dMonad_sccw.
+      mapM $dMonad_sccw
+      = $smapM_sccx
+"SPEC/Main concatAp @ IO _ _" [1]
+    forall @ a_aaw8 @ b_aaw9 $dFunctor_scdD.
+      concatAp $dFunctor_scdD
+      = $sconcatAp_scdE
+"SPEC/Main zipWithM @ IO _ _ _" [1]
+    forall @ a_aau4 @ b_aau5 @ c_aau6 $dMonad_sceG.
+      zipWithM $dMonad_sceG
+      = $szipWithM_sceH
+"SPEC/Main forkManaged @ IO"
+    forall $dMonadBaseControl_sd9C $dMonadIO_sd9B.
+      forkManaged $dMonadIO_sd9B $dMonadBaseControl_sd9C
+      = $sforkManaged_sd9D
+"SPEC/Main times @ IO" [1]
+    forall $d(%,,%)_XcjS. times $d(%,,%)_XcjS = $stimes_sch8
+"SPEC/Main scanlMAfter' @ IO _ _" [1]
+    forall @ b_aajI @ a_aajJ $dMonad_sdbC.
+      scanlMAfter' $dMonad_sdbC
+      = $sscanlMAfter'_sdbD
+"SPEC/Main lookup @ Int _"
+    forall @ a_aalG $dOrd_sdbM. lookup $dOrd_sdbM = $slookup_sdbN
+"SPEC/Main toAbsTime @ MilliSecond64" [1]
+    forall $dTimeUnit_sdbR.
+      toAbsTime $dTimeUnit_sdbR
+      = $stoAbsTime_sdbS
+"SPEC/Main drain @ IO _" [0]
+    forall @ a_adc0 $dMonad_sdcH. drain $dMonad_sdcH = $sdrain_sdcI
+"SPEC/Main drain @ SerialT @ IO _" [2]
+    forall @ a_a8Cs $dMonad_sdbY $dIsStream_sdbX.
+      drain $dIsStream_sdbX $dMonad_sdbY
+      = $sdrain_sdcN
+
