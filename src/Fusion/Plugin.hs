@@ -1007,6 +1007,18 @@ insertAfterSimplPhase0 origTodos ourTodos report =
         = todo : ourTodos ++ go True todos
     go found (todo:todos) = todo : go found todos
 
+moveExitify :: [CoreToDo] -> [CoreToDo]
+moveExitify = concatMap insertExitify . filter removeExitify
+
+    where
+
+    removeExitify CoreDoExitify = False
+    removeExitify _ = True
+
+    -- insertExitify CoreDoSpecConstr = [CoreDoExitify, CoreDoSpecConstr]
+    insertExitify CoreDoSpecConstr = [CoreDoSpecConstr, CoreDoExitify]
+    insertExitify x = [x]
+
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos = do
     options <- liftIO $ parseOptions args
@@ -1026,7 +1038,7 @@ install args todos = do
          then _insertDumpCore
          else id) $
         insertAfterSimplPhase0
-            todos
+            (moveExitify todos)
             [ fusionMarkInline 1 ReportSilent False True
             , fusionSimplify hscEnv dflags
             , fusionMarkInline 2 ReportSilent False True
