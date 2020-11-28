@@ -859,7 +859,10 @@ install _ todos = do
 #endif
 
 plugin :: Plugin
-plugin = defaultPlugin {installCoreToDos = install}
+plugin = defaultPlugin
+    { installCoreToDos = install
+    , pluginRecompile = purePlugin
+    }
 
 -- Orphan instance for 'Fuse'
 instance Outputable Fuse where
