@@ -131,15 +131,25 @@ import Fusion.Plugin.Types (Fuse(..))
 
 data Options = Options
     { optionsDumpCore :: Bool
+    , optionsVerbosityLevel :: ReportMode
     } deriving Show
 
 defaultOptions :: Options
-defaultOptions = Options False
+defaultOptions = Options
+    { optionsDumpCore = False
+    , optionsVerbosityLevel = ReportSilent
+    }
 
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setDumpCore val = do
     (args, opts) <- get
     put (args, opts { optionsDumpCore = val })
+
+setVerbosityLevel :: Monad m
+    => ReportMode -> StateT ([CommandLineOption], Options) m ()
+setVerbosityLevel val = do
+    (args, opts) <- get
+    put (args, opts { optionsVerbosityLevel = val })
 
 -- Like the shell "shift" to shift the command line arguments
 shift :: StateT ([String], Options) (MaybeT IO) (Maybe String)
@@ -163,8 +173,14 @@ parseOptions args = do
     parseOpt opt =
         case opt of
             "dump-core" -> setDumpCore True
+            "verbose=1" -> setVerbosityLevel ReportWarn
+            "verbose=2" -> setVerbosityLevel ReportVerbose
+            "verbose=3" -> setVerbosityLevel ReportVerbose1
+            "verbose=4" -> setVerbosityLevel ReportVerbose2
             str -> do
-                liftIO $ putStrLn $ "Unrecognized option - \"" ++ str ++ "\""
+                liftIO
+                    $ putStrLn
+                    $ "fusion-plugin: Unrecognized option - \"" ++ str ++ "\""
                 mzero
 
     parseLoop = do
@@ -432,6 +448,7 @@ data ReportMode =
     | ReportVerbose
     | ReportVerbose1
     | ReportVerbose2
+    deriving (Show)
 
 getNonRecBinder :: CoreBind -> CoreBndr
 getNonRecBinder (NonRec b _) = b
@@ -806,7 +823,8 @@ _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
 -- Install our plugin core pass
 -------------------------------------------------------------------------------
 
--- Inserts the given list of 'CoreToDo' after the simplifier phase 0.
+-- | Inserts the given list of 'CoreToDo' after the simplifier phase 0.
+-- A final 'CoreToDo' (for reporting) passed is executed after all the phases.
 insertAfterSimplPhase0
     :: [CoreToDo] -> [CoreToDo] -> CoreToDo -> [CoreToDo]
 insertAfterSimplPhase0 origTodos ourTodos report =
@@ -850,7 +868,8 @@ install args todos = do
               in CoreDoPluginPass msg (fusionReport msg ReportSilent)
             ]
             (let msg = "Check unfused (final)"
-            in CoreDoPluginPass msg (fusionReport msg ReportWarn))
+                 report = fusionReport msg (optionsVerbosityLevel options)
+            in CoreDoPluginPass msg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install _ todos = do

@@ -47,12 +47,17 @@ This plugin was primarily motivated by
 general.
 
 To use this plugin, add this package to your `build-depends`
-and pass the following to your ghc-options: `ghc-options: -O2
--fplugin=Fusion.Plugin`
+and pass the following to your ghc-options:
+`ghc-options: -O2 -fplugin=Fusion.Plugin`
 
-To dump core after each core to core transformation, pass the argument
-`-fplugin-opt=Fusion.Plugin:dump-core`. Output from each
-transformation is then printed in a different file.
+### Plugin options
+
+`-fplugin-opt=Fusion.Plugin:dump-core`: dump core after each
+core-to-core transformation. Output from each transformation is printed
+in a different file.
+
+`-fplugin-opt=verbose=1`: report unfused functions. Verbosity levels `2`, `3`,
+`4` can be used for more verbose output.
 
 ## See also
 

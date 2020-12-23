@@ -1,3 +1,11 @@
+## Unreleased
+
+### Enhancements
+
+- Plugin now forces inline on binders that return a type annotated with Fuse.
+- `Fusion.Plugin` now accepts new command line arguments to control the
+  verbosity of the plugin's reporting phase. Refer to `README.md` for usage.
+
 ## 0.2.1
 
 ### Enhancements
