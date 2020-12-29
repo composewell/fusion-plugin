@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ghc_version: [8.6.5, 8.8.3, 8.10.1]
+        ghc_version: [8.4.4, 8.6.5, 8.8.3, 8.10.1]
         cabal_version: ["3.2"]
         os: [ubuntu-18.04]
         include:
@@ -38,6 +38,8 @@ jobs:
           - ghc_version: 8.8.3
             build: cabal-v2
           - ghc_version: 8.6.5
+            build: cabal-v2
+          - ghc_version: 8.4.4
             build: cabal-v2
 
     steps:
