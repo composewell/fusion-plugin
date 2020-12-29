@@ -879,7 +879,9 @@ install _ todos = do
 plugin :: Plugin
 plugin = defaultPlugin
     { installCoreToDos = install
+#if MIN_VERSION_ghc(8,6,0)
     , pluginRecompile = purePlugin
+#endif
     }
 
 -- Orphan instance for 'Fuse'
