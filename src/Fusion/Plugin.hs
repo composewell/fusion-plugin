@@ -48,6 +48,7 @@ module Fusion.Plugin
     )
 where
 
+#if MIN_VERSION_ghc(8,6,0)
 -- Explicit/qualified imports
 import Control.Monad (mzero, when, unless)
 import Control.Monad.Trans.Maybe
@@ -68,6 +69,7 @@ import PprCore (pprCoreBindingsWithSize, pprRules)
 
 import qualified Data.List as DL
 import qualified Data.Set as Set
+#endif
 
 -- Implicit imports
 import GhcPlugins
