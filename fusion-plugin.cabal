@@ -18,7 +18,7 @@ description:
   be used in general.
 homepage:            https://github.com/composewell/fusion-plugin
 bug-reports:         https://github.com/composewell/fusion-plugin/issues
-license:             BSD-3-Clause
+license:             Apache-2.0
 license-file:        LICENSE
 tested-with:         GHC==8.6.3, GHC==8.8.1
 author:              Pranay Sashank
