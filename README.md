@@ -56,8 +56,8 @@ and pass the following to your ghc-options:
 core-to-core transformation. Output from each transformation is printed
 in a different file.
 
-`-fplugin-opt=verbose=1`: report unfused functions. Verbosity levels `2`, `3`,
-`4` can be used for more verbose output.
+`-fplugin-opt=Fusion.Plugin:verbose=1`: report unfused functions. Verbosity
+levels `2`, `3`, `4` can be used for more verbose output.
 
 ## See also
 

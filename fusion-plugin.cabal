@@ -1,7 +1,7 @@
 cabal-version:       2.2
 
 name:                fusion-plugin
-version:             0.2.1
+version:             0.2.2
 synopsis:            GHC plugin to make stream fusion more predictable.
 description:
   This plugin provides the programmer with a way to annotate certain
@@ -20,7 +20,7 @@ homepage:            https://github.com/composewell/fusion-plugin
 bug-reports:         https://github.com/composewell/fusion-plugin/issues
 license:             Apache-2.0
 license-file:        LICENSE
-tested-with:         GHC==8.6.3, GHC==8.8.1
+tested-with:         GHC==8.6.3, GHC==8.8.1, GHC==8.10.3
 author:              Pranay Sashank
 maintainer:          pranaysashank@composewell.com
 copyright:           (c) 2019 Composewell Technologies
