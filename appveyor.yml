@@ -3,6 +3,10 @@
 # variables here.  See https://github.com/harendra-kumar/packcheck for all
 # options and their explanation.
 
+branches:
+  only:
+    - master
+
 environment:
     # ------------------------------------------------------------------------
     # Global options, you can use these per build as well
