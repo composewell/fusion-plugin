@@ -50,29 +50,39 @@ where
 
 #if MIN_VERSION_ghc(8,6,0)
 -- Explicit/qualified imports
-import Control.Monad (mzero, when, unless)
+import Control.Monad (mzero, when)
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.State
-import Data.Char (isSpace)
 import Data.Maybe (mapMaybe)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
+
+#if MIN_VERSION_ghc(9,0,0)
+-- import GHC.Utils.Error (Severity(..))
+-- import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
+#else
+import Control.Monad (unless)
+import Data.Char (isSpace)
 import Data.IORef (readIORef, writeIORef)
 import Data.Time (getCurrentTime)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath ((</>), takeDirectory)
 import System.IO (Handle, IOMode(..), withFile, hSetEncoding, utf8)
 import Text.Printf (printf)
-
 import ErrUtils (mkDumpDoc, Severity(..))
 import PprCore (pprCoreBindingsWithSize, pprRules)
-
-import qualified Data.List as DL
 import qualified Data.Set as Set
 #endif
 
+import qualified Data.List as DL
+#endif
+
 -- Implicit imports
+#if MIN_VERSION_ghc(9,0,0)
+import GHC.Plugins
+#else
 import GhcPlugins
+#endif
 
 -- Imports from this package
 import Fusion.Plugin.Types (Fuse(..))
@@ -89,6 +99,8 @@ import Fusion.Plugin.Types (Fuse(..))
 -- @
 -- ghc-options: -O2 -fplugin=Fusion.Plugin
 -- @
+--
+-- The following currently works only for GHC versions less than 9.0.
 --
 -- To dump the core after each core to core transformation, pass the
 -- following to your ghc-options:
@@ -141,10 +153,12 @@ defaultOptions = Options
     , optionsVerbosityLevel = ReportSilent
     }
 
+#if !MIN_VERSION_ghc(9,0,0)
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setDumpCore val = do
     (args, opts) <- get
     put (args, opts { optionsDumpCore = val })
+#endif
 
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
@@ -173,7 +187,9 @@ parseOptions args = do
 
     parseOpt opt =
         case opt of
+#if !MIN_VERSION_ghc(9,0,0)
             "dump-core" -> setDumpCore True
+#endif
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1
@@ -224,10 +240,22 @@ setInlineOnBndrs bndrs = everywhere $ mkT go
         NonRec (setAlwaysInlineOnBndr b) expr
     go x = x
 
+#if MIN_VERSION_ghc(9,0,0)
+#define IS_ACTIVE isActive (Phase 0)
+#define UNIQ_FM UniqFM Name [Fuse]
+#define GET_NAME getName
+#define FMAP_SND fmap snd $
+#else
+#define IS_ACTIVE isActiveIn 0
+#define UNIQ_FM UniqFM [Fuse]
+#define GET_NAME getUnique
+#define FMAP_SND
+#endif
+
 hasInlineBinder :: CoreBndr -> Bool
 hasInlineBinder bndr =
     let inl = inlinePragInfo $ idInfo bndr
-    in isInlinePragma inl && isActiveIn 0 (inlinePragmaActivation inl)
+    in isInlinePragma inl && IS_ACTIVE (inlinePragmaActivation inl)
 
 -------------------------------------------------------------------------------
 -- Inspect case alternatives for interesting constructor matches
@@ -236,17 +264,17 @@ hasInlineBinder bndr =
 -- Checks whether a case alternative contains a type with the
 -- annotation.  Only checks the first typed element in the list, so
 -- only pass alternatives from one case expression.
-altsContainsAnn :: UniqFM [Fuse] -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
+altsContainsAnn :: UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
 altsContainsAnn _ [] = Nothing
 altsContainsAnn anns (bndr@(DataAlt dcon, _, _):_) =
-    case lookupUFM anns (getUnique $ dataConTyCon dcon) of
+    case lookupUFM anns (GET_NAME $ dataConTyCon dcon) of
         Nothing -> Nothing
         Just _ -> Just bndr
 altsContainsAnn anns ((DEFAULT, _, _):alts) = altsContainsAnn anns alts
 altsContainsAnn _ _ = Nothing
 
 needInlineCaseAlt
-    :: CoreBind -> UniqFM [Fuse] -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
+    :: CoreBind -> UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
 needInlineCaseAlt parent anns bndr =
     case altsContainsAnn anns bndr of
         Just alt | not (hasInlineBinder $ getNonRecBinder parent) -> Just alt
@@ -275,7 +303,7 @@ needInlineCaseAlt parent anns bndr =
 -- case alternative scrutinizing the annotated type for better errors with
 -- context.
 letBndrsThatAreCases
-    :: UniqFM [Fuse]
+    :: UNIQ_FM
     -> CoreBind
     -> [([CoreBind], Alt CoreBndr)]
 letBndrsThatAreCases anns bind = goLet [] bind
@@ -334,9 +362,9 @@ letBndrsThatAreCases anns bind = goLet [] bind
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
-needInlineConstr :: CoreBind -> UniqFM [Fuse] -> DataCon -> Bool
+needInlineConstr :: CoreBind -> UNIQ_FM -> DataCon -> Bool
 needInlineConstr parent anns dcon =
-    case lookupUFM anns (getUnique $ dataConTyCon dcon) of
+    case lookupUFM anns (GET_NAME $ dataConTyCon dcon) of
         Just _ | not (hasInlineBinder $ getNonRecBinder parent) -> True
         _ -> False
 
@@ -348,7 +376,7 @@ needInlineConstr parent anns dcon =
 -- constructor is directly used in the binder definition rather than through an
 -- identifier.
 --
-constructingBinders :: UniqFM [Fuse] -> CoreBind -> [([CoreBind], DataCon)]
+constructingBinders :: UNIQ_FM -> CoreBind -> [([CoreBind], DataCon)]
 constructingBinders anns bind = goLet [] bind
   where
     -- The first argument is current binder and its parent chain. We add a new
@@ -393,7 +421,7 @@ data Context = CaseAlt (Alt CoreBndr) | Constr DataCon
 -- anywhere in the binders, not just case match on entry or construction on
 -- return.
 --
-containsAnns :: UniqFM [Fuse] -> CoreBind -> [([CoreBind], Context)]
+containsAnns :: UNIQ_FM -> CoreBind -> [([CoreBind], Context)]
 containsAnns anns bind =
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
@@ -423,7 +451,7 @@ containsAnns anns bind =
     go parents (Var i) =
         case idDetails i of
             DataConWorkId dcon ->
-                case lookupUFM anns (getUnique $ dataConTyCon dcon) of
+                case lookupUFM anns (GET_NAME $ dataConTyCon dcon) of
                     Just _ -> [(parents, Constr dcon)]
                     Nothing -> []
             _ -> []
@@ -536,12 +564,12 @@ markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline reportMode failIt transform guts = do
     putMsgS $ "fusion-plugin: Checking bindings to inline..."
     dflags <- getDynFlags
-    anns <- getAnnotations deserializeWithData guts
+    anns <- FMAP_SND getAnnotations deserializeWithData guts
     if (anyUFM (any (== Fuse)) anns)
     then bindsOnlyPass (mapM (transformBind dflags anns)) guts
     else return guts
   where
-    transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM CoreBind
+    -- transformBind :: DynFlags -> UniqFM Unique [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns bind@(NonRec b _) = do
         let patternMatches = letBndrsThatAreCases anns bind
         let uniqPat = DL.nub (map (getNonRecBinder. head . fst) patternMatches)
@@ -615,12 +643,12 @@ fusionReport :: String -> ReportMode -> ModGuts -> CoreM ModGuts
 fusionReport msg reportMode guts = do
     putMsgS $ "fusion-plugin: " ++ msg ++ "..."
     dflags <- getDynFlags
-    anns <- getAnnotations deserializeWithData guts
+    anns <- FMAP_SND getAnnotations deserializeWithData guts
     when (anyUFM (any (== Fuse)) anns) $
         mapM_ (transformBind dflags anns) $ mg_binds guts
     return guts
   where
-    transformBind :: DynFlags -> UniqFM [Fuse] -> CoreBind -> CoreM ()
+    transformBind :: DynFlags -> UNIQ_FM -> CoreBind -> CoreM ()
     transformBind dflags anns bind@(NonRec b _) = do
         let results = containsAnns anns bind
 
@@ -666,6 +694,7 @@ fusionReport msg reportMode guts = do
 -- Dump core passes
 -------------------------------------------------------------------------------
 
+#if !MIN_VERSION_ghc(9,0,0)
 chooseDumpFile :: DynFlags -> FilePath -> Maybe FilePath
 chooseDumpFile dflags suffix
         | Just prefix <- getPrefix
@@ -819,6 +848,7 @@ _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
     go counter (todo:rest) =
         todo : dumpCorePass counter (text "After " GhcPlugins.<> ppr todo)
              : go (counter + 1) rest
+#endif
 
 -------------------------------------------------------------------------------
 -- Install our plugin core pass
@@ -854,7 +884,14 @@ install args todos = do
     --
     -- TODO do not run simplify if we did not do anything in markInline phase.
     return $
-        (if optionsDumpCore options then _insertDumpCore else id) $
+        (if optionsDumpCore options
+         then
+#if !MIN_VERSION_ghc(9,0,0)
+            _insertDumpCore
+#else
+            id
+#endif
+         else id) $
         insertAfterSimplPhase0
             todos
             [ fusionMarkInline ReportSilent False True
