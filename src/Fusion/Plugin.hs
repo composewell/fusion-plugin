@@ -269,16 +269,22 @@ hasInlineBinder bndr =
 -- Inspect case alternatives for interesting constructor matches
 -------------------------------------------------------------------------------
 
+#if MIN_VERSION_ghc(9,3,0)
+#define ALT_CONSTR(x,y,z) Alt (x) y z
+#else
+#define ALT_CONSTR(x,y,z) (x, y, z)
+#endif
+
 -- Checks whether a case alternative contains a type with the
 -- annotation.  Only checks the first typed element in the list, so
 -- only pass alternatives from one case expression.
 altsContainsAnn :: UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
 altsContainsAnn _ [] = Nothing
-altsContainsAnn anns (bndr@(DataAlt dcon, _, _):_) =
+altsContainsAnn anns (bndr@(ALT_CONSTR(DataAlt dcon,_,_)):_) =
     case lookupUFM anns (GET_NAME $ dataConTyCon dcon) of
         Nothing -> Nothing
         Just _ -> Just bndr
-altsContainsAnn anns ((DEFAULT, _, _):alts) = altsContainsAnn anns alts
+altsContainsAnn anns ((ALT_CONSTR(DEFAULT,_,_)):alts) = altsContainsAnn anns alts
 altsContainsAnn _ _ = Nothing
 
 getNonRecBinder :: CoreBind -> CoreBndr
@@ -335,7 +341,7 @@ letBndrsThatAreCases anns bind = goLet [] bind
     -- annotated with "Fuse" and traverse the Alt expressions to discover more
     -- let bindings.
     go parents True (Case _ _ _ alts) =
-        let binders = alts >>= (\(_, _, expr1) -> go parents False expr1)
+        let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents False expr1)
         in case needInlineCaseAlt (head parents) anns alts of
             Just x -> (parents, x) : binders
             Nothing -> binders
@@ -343,7 +349,7 @@ letBndrsThatAreCases anns bind = goLet [] bind
     -- Only traverse the Alt expressions of the case to discover new let
     -- bindings. Do not match for annotated constructors in the Alts.
     go parents False (Case _ _ _ alts) =
-        alts >>= (\(_, _, expr1) -> go parents False expr1)
+        alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents False expr1)
 
     -- Enter a new let binding inside the current expression and traverse the
     -- let expression as well.
@@ -402,7 +408,7 @@ constructingBinders anns bind = goLet [] bind
 
     -- Traverse these to discover new let bindings
     go parents (Case _ _ _ alts) =
-        alts >>= (\(_, _, expr1) -> go parents expr1)
+        alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
     go parents (App expr1 expr2) = go parents expr1 ++ go parents expr2
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
@@ -445,7 +451,7 @@ containsAnns anns bind =
     -- annotated with "Fuse" and traverse the Alt expressions to discover more
     -- let bindings.
     go parents (Case _ _ _ alts) =
-        let binders = alts >>= (\(_, _, expr1) -> go parents expr1)
+        let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
         in case altsContainsAnn anns alts of
             Just x -> (parents, CaseAlt x) : binders
             Nothing -> binders
@@ -509,7 +515,7 @@ showDetailsCaseMatch
     -> ReportMode
     -> ([CoreBind], Alt CoreBndr)
     -> String
-showDetailsCaseMatch dflags reportMode (binds, c@(con,_,_)) =
+showDetailsCaseMatch dflags reportMode (binds, c@(ALT_CONSTR(con,_,_))) =
     listPath dflags binds ++ ": " ++
         case reportMode of
             ReportVerbose -> showSDoc dflags (ppr con)
@@ -547,7 +553,7 @@ showInfo
 showInfo parent dflags reportMode failIt
         tag uniqBinders annotated showDetails =
     when (uniqBinders /= []) $ do
-        let msg = "In "
+        let mesg = "In "
                   ++ addMissingUnique dflags parent
                   ++ " binders "
                   ++ show (map (addMissingUnique dflags) (uniqBinders))
@@ -558,7 +564,7 @@ showInfo parent dflags reportMode failIt
             ReportSilent -> return ()
             ReportWarn -> return ()
             _ -> do
-                putMsgS msg
+                putMsgS mesg
                 putMsgS $ DL.unlines
                         $ DL.nub
                         $ map (showDetails dflags reportMode) annotated
@@ -625,8 +631,8 @@ fusionMarkInline opt failIt transform =
 -- Simplification pass after marking inline
 -------------------------------------------------------------------------------
 
-fusionSimplify :: DynFlags -> CoreToDo
-fusionSimplify dflags =
+fusionSimplify :: HscEnv -> DynFlags -> CoreToDo
+fusionSimplify _hsc_env dflags =
     CoreDoSimplify
         (maxSimplIterations dflags)
         SimplMode
@@ -637,15 +643,24 @@ fusionSimplify dflags =
             , sm_eta_expand = gopt Opt_DoLambdaEtaExpansion dflags
             , sm_inline = True
             , sm_case_case = True
+#if MIN_VERSION_ghc(9,3,0)
+            , sm_uf_opts = unfoldingOpts dflags
+            , sm_pre_inline = gopt Opt_SimplPreInlining dflags
+            , sm_logger = logger
+#endif
             }
+
+#if MIN_VERSION_ghc(9,3,0)
+    where logger = hsc_logger _hsc_env
+#endif
 
 -------------------------------------------------------------------------------
 -- Report unfused constructors
 -------------------------------------------------------------------------------
 
 fusionReport :: String -> ReportMode -> ModGuts -> CoreM ModGuts
-fusionReport msg reportMode guts = do
-    putMsgS $ "fusion-plugin: " ++ msg ++ "..."
+fusionReport mesg reportMode guts = do
+    putMsgS $ "fusion-plugin: " ++ mesg ++ "..."
     dflags <- getDynFlags
     anns <- FMAP_SND getAnnotations deserializeWithData guts
     when (anyUFM (any (== Fuse)) anns) $
@@ -724,6 +739,7 @@ chooseDumpFile dflags suffix
                          Just d  -> d </> f
                          Nothing ->       f
 
+-- Copied from GHC.Utils.Logger
 withDumpFileHandle :: DynFlags -> FilePath -> (Maybe Handle -> IO ()) -> IO ()
 withDumpFileHandle dflags suffix action = do
     let mFile = chooseDumpFile dflags suffix
@@ -878,6 +894,7 @@ install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos = do
     options <- liftIO $ parseOptions args
     dflags <- getDynFlags
+    hscEnv <- getHscEnv
     -- We run our plugin once the simplifier finishes phase 0,
     -- followed by a gentle simplifier which inlines and case-cases
     -- twice.
@@ -899,19 +916,19 @@ install args todos = do
         insertAfterSimplPhase0
             todos
             [ fusionMarkInline ReportSilent False True
-            , fusionSimplify dflags
+            , fusionSimplify hscEnv dflags
             , fusionMarkInline ReportSilent False True
-            , fusionSimplify dflags
+            , fusionSimplify hscEnv dflags
             , fusionMarkInline ReportSilent False True
-            , fusionSimplify dflags
+            , fusionSimplify hscEnv dflags
             -- This lets us know what was left unfused after all the inlining
             -- and case-of-case transformations.
-            , let msg = "Check unfused (post inlining)"
-              in CoreDoPluginPass msg (fusionReport msg ReportSilent)
+            , let mesg = "Check unfused (post inlining)"
+              in CoreDoPluginPass mesg (fusionReport mesg ReportSilent)
             ]
-            (let msg = "Check unfused (final)"
-                 report = fusionReport msg (optionsVerbosityLevel options)
-            in CoreDoPluginPass msg report)
+            (let mesg = "Check unfused (final)"
+                 report = fusionReport mesg (optionsVerbosityLevel options)
+            in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install _ todos = do
