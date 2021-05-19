@@ -142,6 +142,14 @@ import Fusion.Plugin.Types (Fuse(..))
 -- Commandline parsing lifted from streamly/benchmark/Chart.hs
 -------------------------------------------------------------------------------
 
+data ReportMode =
+      ReportSilent
+    | ReportWarn
+    | ReportVerbose
+    | ReportVerbose1
+    | ReportVerbose2
+    deriving (Show)
+
 data Options = Options
     { optionsDumpCore :: Bool
     , optionsVerbosityLevel :: ReportMode
@@ -272,6 +280,10 @@ altsContainsAnn anns (bndr@(DataAlt dcon, _, _):_) =
         Just _ -> Just bndr
 altsContainsAnn anns ((DEFAULT, _, _):alts) = altsContainsAnn anns alts
 altsContainsAnn _ _ = Nothing
+
+getNonRecBinder :: CoreBind -> CoreBndr
+getNonRecBinder (NonRec b _) = b
+getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
 
 needInlineCaseAlt
     :: CoreBind -> UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
@@ -471,18 +483,6 @@ containsAnns anns bind =
 -- Core-to-core pass to mark interesting binders to be always inlined
 -------------------------------------------------------------------------------
 
-data ReportMode =
-      ReportSilent
-    | ReportWarn
-    | ReportVerbose
-    | ReportVerbose1
-    | ReportVerbose2
-    deriving (Show)
-
-getNonRecBinder :: CoreBind -> CoreBndr
-getNonRecBinder (NonRec b _) = b
-getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
-
 -- XXX we can possibly have a FUSE_DEBUG annotation to print verbose
 -- messages only for a given type.
 --
@@ -529,6 +529,10 @@ showDetailsConstr dflags reportMode (binds, con) =
             ReportVerbose1 -> showSDoc dflags (ppr con)
             ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
             _ -> error "transformBind: unreachable"
+
+-- Orphan instance for 'Fuse'
+instance Outputable Fuse where
+    ppr _ = text "Fuse"
 
 showInfo
     :: CoreBndr
@@ -922,7 +926,3 @@ plugin = defaultPlugin
     , pluginRecompile = purePlugin
 #endif
     }
-
--- Orphan instance for 'Fuse'
-instance Outputable Fuse where
-    ppr _ = text "Fuse"
