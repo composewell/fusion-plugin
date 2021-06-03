@@ -70,11 +70,10 @@ package.
 
 ## Contributing
 
-All contributions are welcome!  The code is available under BSD-3
+All contributions are welcome!  The code is available under Apache-2.0
 license [on github](https://github.com/composewell/fusion-plugin).  In
-case you have any questions or suggestions please contact [Pranay
-Sashank](mailto:pranaysashank@composewell.com), the author and
-maintainer of this plugin.
+case you have any questions or suggestions please contact [the
+maintainers](mailto:streamly@composewell.com).
 
 We would be happy to see this work getting integrated with GHC as a fix for
 [GHC ticket #17075](https://gitlab.haskell.org/ghc/ghc/issues/17075), any help

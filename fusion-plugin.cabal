@@ -1,7 +1,7 @@
 cabal-version:       2.2
 
 name:                fusion-plugin
-version:             0.2.2
+version:             0.2.3
 synopsis:            GHC plugin to make stream fusion more predictable.
 description:
   This plugin provides the programmer with a way to annotate certain
@@ -14,15 +14,15 @@ description:
   irrespective of the size.
   .
   This plugin was primarily motivated by
-  <https://hackage.haskell.org/package/streamly streamly> but it can
+  <https://streamly.composewell.com streamly> but it can
   be used in general.
 homepage:            https://github.com/composewell/fusion-plugin
 bug-reports:         https://github.com/composewell/fusion-plugin/issues
 license:             Apache-2.0
 license-file:        LICENSE
-tested-with:         GHC==8.6.3, GHC==8.8.1, GHC==8.10.3
+tested-with:         GHC==8.6.5, GHC==8.8.4, GHC==8.10.4, GHC==9.0.1
 author:              Pranay Sashank
-maintainer:          pranaysashank@composewell.com
+maintainer:          streamly@composewell.com
 copyright:           (c) 2019 Composewell Technologies
 category:            Development
 extra-source-files:  CHANGELOG.md

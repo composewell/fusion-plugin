@@ -1,3 +1,8 @@
+## 0.2.3
+
+* Enhancement: Support ghc-9.0.1
+* Note: `dump-core` command line flag does not work for ghc-9.0.1
+
 ## 0.2.2
 
 ### Enhancements
