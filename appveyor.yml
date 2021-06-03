@@ -37,7 +37,7 @@ environment:
     # version.
     #STACKVER: "1.6.5"
     STACK_UPGRADE: "y"
-    RESOLVER: "lts-15.9"
+    RESOLVER: "lts-17.14"
     STACK_ROOT: "c:\\sr"
 
     # ------------------------------------------------------------------------
