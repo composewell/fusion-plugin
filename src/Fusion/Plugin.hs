@@ -57,9 +57,23 @@ import Data.Maybe (mapMaybe)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
 
-#if MIN_VERSION_ghc(9,0,0)
--- import GHC.Utils.Error (Severity(..))
--- import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
+#if MIN_VERSION_ghc(9,2,0)
+import Data.Char (isSpace)
+import Text.Printf (printf)
+import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
+#endif
+
+#if MIN_VERSION_ghc(9,2,0)
+import GHC.Types.Name.Ppr (mkPrintUnqualified)
+import GHC.Utils.Logger (Logger)
+#endif
+
+#if MIN_VERSION_ghc(9,3,0)
+import GHC.Utils.Logger (putDumpFile, logFlags)
+#elif MIN_VERSION_ghc(9,2,0)
+import GHC.Utils.Logger (putDumpMsg)
+#elif MIN_VERSION_ghc(9,0,0)
+-- dump core option not supported
 #else
 import Control.Monad (unless)
 import Data.Char (isSpace)
@@ -78,7 +92,11 @@ import qualified Data.List as DL
 #endif
 
 -- Implicit imports
-#if MIN_VERSION_ghc(9,0,0)
+
+#if MIN_VERSION_ghc(9,2,0)
+import GHC.Plugins
+import qualified GHC.Plugins as GhcPlugins
+#elif MIN_VERSION_ghc(9,0,0)
 import GHC.Plugins
 #else
 import GhcPlugins
@@ -161,12 +179,10 @@ defaultOptions = Options
     , optionsVerbosityLevel = ReportSilent
     }
 
-#if !MIN_VERSION_ghc(9,0,0)
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setDumpCore val = do
     (args, opts) <- get
     put (args, opts { optionsDumpCore = val })
-#endif
 
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
@@ -195,9 +211,7 @@ parseOptions args = do
 
     parseOpt opt =
         case opt of
-#if !MIN_VERSION_ghc(9,0,0)
             "dump-core" -> setDumpCore True
-#endif
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1
@@ -269,7 +283,7 @@ hasInlineBinder bndr =
 -- Inspect case alternatives for interesting constructor matches
 -------------------------------------------------------------------------------
 
-#if MIN_VERSION_ghc(9,3,0)
+#if MIN_VERSION_ghc(9,2,0)
 #define ALT_CONSTR(x,y,z) Alt (x) y z
 #else
 #define ALT_CONSTR(x,y,z) (x, y, z)
@@ -643,14 +657,14 @@ fusionSimplify _hsc_env dflags =
             , sm_eta_expand = gopt Opt_DoLambdaEtaExpansion dflags
             , sm_inline = True
             , sm_case_case = True
-#if MIN_VERSION_ghc(9,3,0)
+#if MIN_VERSION_ghc(9,2,0)
             , sm_uf_opts = unfoldingOpts dflags
             , sm_pre_inline = gopt Opt_SimplPreInlining dflags
             , sm_logger = logger
 #endif
             }
 
-#if MIN_VERSION_ghc(9,3,0)
+#if MIN_VERSION_ghc(9,2,0)
     where logger = hsc_logger _hsc_env
 #endif
 
@@ -713,6 +727,7 @@ fusionReport mesg reportMode guts = do
 -- Dump core passes
 -------------------------------------------------------------------------------
 
+-- Only for GHC versions before 9.0.0
 #if !MIN_VERSION_ghc(9,0,0)
 chooseDumpFile :: DynFlags -> FilePath -> Maybe FilePath
 chooseDumpFile dflags suffix
@@ -790,6 +805,38 @@ dumpSDoc :: DynFlags -> PrintUnqualified -> FilePath -> String -> SDoc -> IO ()
 dumpSDoc dflags print_unqual
     = dumpSDocWithStyle dump_style dflags
   where dump_style = mkDumpStyle dflags print_unqual
+#endif
+
+-- dump core not supported on 9.0.0
+#if __GLASGOW_HASKELL__!=900
+-- Only for GHC versions >= 9.2.0
+#if MIN_VERSION_ghc(9,2,0)
+dumpPassResult ::
+      Logger
+   -> DynFlags
+   -> PrintUnqualified
+   -> SDoc                  -- Header
+   -> SDoc                  -- Extra info to appear after header
+   -> CoreProgram -> [CoreRule]
+   -> IO ()
+dumpPassResult logger dflags unqual hdr extra_info binds rules = do
+#if MIN_VERSION_ghc(9,3,0)
+    let flags = logFlags logger
+    let getDumpAction = putDumpFile
+#else
+    let flags = dflags
+    let getDumpAction = putDumpMsg
+#endif
+    (getDumpAction logger)
+        flags dump_style Opt_D_dump_simpl title undefined dump_doc
+
+    where
+
+    title = showSDoc dflags hdr
+
+    dump_style = mkDumpStyle unqual
+
+#else
 
 dumpPassResult :: DynFlags
                -> PrintUnqualified
@@ -803,6 +850,7 @@ dumpPassResult dflags unqual suffix hdr extra_info binds rules = do
 
   where
 
+#endif
     dump_doc  = vcat [ nest 2 extra_info
                      , blankLine
                      , pprCoreBindingsWithSize binds
@@ -819,15 +867,25 @@ filterOutLast p [x]
 filterOutLast p (x:xs) = x : filterOutLast p xs
 
 dumpResult
+#if MIN_VERSION_ghc(9,2,0)
+    :: Logger
+    -> DynFlags
+#else
     :: DynFlags
+#endif
     -> PrintUnqualified
     -> Int
     -> SDoc
     -> CoreProgram
     -> [CoreRule]
     -> IO ()
+#if MIN_VERSION_ghc(9,2,0)
+dumpResult logger dflags print_unqual counter todo binds rules =
+    dumpPassResult logger dflags1 print_unqual hdr (text "") binds rules
+#else
 dumpResult dflags print_unqual counter todo binds rules =
     dumpPassResult dflags print_unqual suffix hdr (text "") binds rules
+#endif
 
     where
 
@@ -841,6 +899,14 @@ dumpResult dflags print_unqual counter todo binds rules =
                $ filterOutLast isSpace
                $ takeWhile (/= '(')
                $ showSDoc dflags todo)
+        ++ "."
+
+#if MIN_VERSION_ghc(9,2,0)
+    dflags1 = dflags
+        { dumpPrefix = fmap (++ suffix) (dumpPrefix dflags)
+        , dumpPrefixForce = fmap (++ suffix) (dumpPrefixForce dflags)
+        }
+#endif
 
 dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
 dumpCore counter todo
@@ -853,8 +919,16 @@ dumpCore counter todo
     putMsgS $ "fusion-plugin: dumping core "
         ++ show counter ++ " " ++ showSDoc dflags todo
 
+#if MIN_VERSION_ghc(9,2,0)
+    hscEnv <- getHscEnv
+    let logger = hsc_logger hscEnv
+    let print_unqual = mkPrintUnqualified (hsc_unit_env hscEnv) rdr_env
+    liftIO $ dumpResult logger dflags print_unqual counter
+                todo binds rules
+#else
     let print_unqual = mkPrintUnqualified dflags rdr_env
     liftIO $ dumpResult dflags print_unqual counter todo binds rules
+#endif
     return guts
 
 dumpCorePass :: Int -> SDoc -> CoreToDo
@@ -905,14 +979,11 @@ install args todos = do
     --
     -- TODO do not run simplify if we did not do anything in markInline phase.
     return $
+#if __GLASGOW_HASKELL__!=900
         (if optionsDumpCore options
-         then
-#if !MIN_VERSION_ghc(9,0,0)
-            _insertDumpCore
-#else
-            id
-#endif
+         then _insertDumpCore
          else id) $
+#endif
         insertAfterSimplPhase0
             todos
             [ fusionMarkInline ReportSilent False True
