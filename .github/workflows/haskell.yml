@@ -34,19 +34,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [9.0.1, 8.10.4, 8.10.4+macOS, 8.8.4, 8.6.5, 8.4.4]
-        cabal_version: ["3.4"]
+        name: [9.2.1, 9.0.2, 8.10.7, 8.10.7+macOS, 8.8.4, 8.6.5, 8.4.4]
+        cabal_version: ["3.6"]
         include:
-          - name: 9.0.1
-            ghc_version: 9.0.1
+          - name: 9.2.1
+            ghc_version: 9.2.1
             build: cabal-v2
             runner: ubuntu-latest
-          - name: 8.10.4
-            ghc_version: 8.10.4
+          - name: 9.0.2
+            ghc_version: 9.0.2
             build: cabal-v2
             runner: ubuntu-latest
-          - name: 8.10.4+macOS
-            ghc_version: 8.10.4
+          - name: 8.10.7
+            ghc_version: 8.10.7
+            build: cabal-v2
+            runner: ubuntu-latest
+          - name: 8.10.7+macOS
+            ghc_version: 8.10.7
             build: cabal-v2
             disable_sdist_build: "y"
             runner: macos-latest
