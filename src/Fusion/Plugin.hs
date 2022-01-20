@@ -69,7 +69,7 @@ import GHC.Utils.Logger (Logger)
 #endif
 
 #if MIN_VERSION_ghc(9,3,0)
-import GHC.Utils.Logger (putDumpFile, logFlags)
+import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
 #elif MIN_VERSION_ghc(9,2,0)
 import GHC.Utils.Logger (putDumpMsg)
 #elif MIN_VERSION_ghc(9,0,0)
@@ -881,7 +881,7 @@ dumpResult
     -> IO ()
 #if MIN_VERSION_ghc(9,2,0)
 dumpResult logger dflags print_unqual counter todo binds rules =
-    dumpPassResult logger dflags1 print_unqual hdr (text "") binds rules
+    dumpPassResult logger1 dflags print_unqual hdr (text "") binds rules
 #else
 dumpResult dflags print_unqual counter todo binds rules =
     dumpPassResult dflags print_unqual suffix hdr (text "") binds rules
@@ -901,11 +901,14 @@ dumpResult dflags print_unqual counter todo binds rules =
                $ showSDoc dflags todo)
         ++ "."
 
-#if MIN_VERSION_ghc(9,2,0)
-    dflags1 = dflags
-        { dumpPrefix = fmap (++ suffix) (dumpPrefix dflags)
-        , dumpPrefixForce = fmap (++ suffix) (dumpPrefixForce dflags)
-        }
+#if MIN_VERSION_ghc(9,3,0)
+    prefix =
+        case log_dump_prefix (logFlags logger) of
+            Nothing -> Just suffix
+            Just x -> Just (x ++ suffix)
+    logger1 = logger {logFlags = (logFlags logger) {log_dump_prefix = prefix}}
+#elif MIN_VERSION_ghc(9,2,0)
+    logger1 = logger
 #endif
 
 dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
