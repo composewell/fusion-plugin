@@ -49,25 +49,26 @@ module Fusion.Plugin
 where
 
 #if MIN_VERSION_ghc(8,6,0)
--- Explicit/qualified imports
+-- Imports for all compiler versions
 import Control.Monad (mzero, when)
-import Control.Monad.Trans.Maybe
-import Control.Monad.Trans.State
+import Control.Monad.Trans.Maybe (MaybeT(..))
+import Control.Monad.Trans.State (StateT, evalStateT, get, put)
 import Data.Maybe (mapMaybe)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
+import qualified Data.List as DL
 
+-- Imports for specific compiler versions
 #if MIN_VERSION_ghc(9,2,0)
 import Data.Char (isSpace)
+import Debug.Trace (trace)
 import Text.Printf (printf)
 import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
-#endif
-
-#if MIN_VERSION_ghc(9,2,0)
 import GHC.Types.Name.Ppr (mkPrintUnqualified)
 import GHC.Utils.Logger (Logger)
 #endif
 
+-- dump-core option related imports
 #if MIN_VERSION_ghc(9,3,0)
 import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
 #elif MIN_VERSION_ghc(9,2,0)
@@ -87,17 +88,12 @@ import ErrUtils (mkDumpDoc, Severity(..))
 import PprCore (pprCoreBindingsWithSize, pprRules)
 import qualified Data.Set as Set
 #endif
-
-import qualified Data.List as DL
 #endif
 
 -- Implicit imports
-
-#if MIN_VERSION_ghc(9,2,0)
+#if MIN_VERSION_ghc(9,0,0)
 import GHC.Plugins
 import qualified GHC.Plugins as GhcPlugins
-#elif MIN_VERSION_ghc(9,0,0)
-import GHC.Plugins
 #else
 import GhcPlugins
 #endif
@@ -155,6 +151,39 @@ import Fusion.Plugin.Types (Fuse(..))
 -- presence of the stream state constructors.
 
 #if MIN_VERSION_ghc(8,6,0)
+
+-------------------------------------------------------------------------------
+-- Debug stuff
+-------------------------------------------------------------------------------
+
+-- XXX Can use the debugLevel from dflags
+-- Increase this level to see debug output
+dbgLevel :: Int
+dbgLevel = 0
+
+debug :: Int -> String -> a -> a
+debug level str x =
+    if dbgLevel >= level
+    then trace str x
+    else x
+
+showBndr :: Outputable a => DynFlags -> a -> String
+showBndr dflags bndr = showSDoc dflags $ ppr bndr
+
+showWithUnique :: (Outputable a, Uniquable a) => DynFlags -> a -> String
+showWithUnique dflags bndr =
+    let suffix = showSDoc dflags $ ppr (getUnique bndr)
+        bndrName = showBndr dflags bndr
+    in if DL.isSuffixOf suffix bndrName
+       then bndrName
+       else bndrName ++ "_" ++ suffix
+
+listPath :: DynFlags -> [CoreBind] -> [Char]
+listPath dflags binds =
+      DL.intercalate "/"
+    $ reverse
+    $ map (showWithUnique dflags)
+    $ map getNonRecBinder binds
 
 -------------------------------------------------------------------------------
 -- Commandline parsing lifted from streamly/benchmark/Chart.hs
@@ -238,8 +267,8 @@ unfoldCompulsory arity cuf@CoreUnfolding{} =
 unfoldCompulsory _ x = x -- NoUnfolding
 
 -- Sets the inline pragma on a bndr, and forgets the unfolding.
-setAlwaysInlineOnBndr :: CoreBndr -> CoreBndr
-setAlwaysInlineOnBndr n =
+setAlwaysInlineOnBndr :: DynFlags -> CoreBndr -> CoreBndr
+setAlwaysInlineOnBndr dflags n =
     let info =
             case zapUsageInfo $ idInfo n of
                 Just i -> i
@@ -250,16 +279,18 @@ setAlwaysInlineOnBndr n =
             setUnfoldingInfo
                 (setInlinePragInfo info alwaysInlinePragma)
                 (unfoldCompulsory (arityInfo info) unf)
-     in lazySetIdInfo n info'
+     in debug 1
+            ("Forcing inline on: " ++ showWithUnique dflags n)
+            (lazySetIdInfo n info')
 
 --TODO: Replace self-recursive definitions with a loop breaker.
 -- | Set inline on specific binders inside a given bind.
-setInlineOnBndrs :: [CoreBndr] -> CoreBind -> CoreBind
-setInlineOnBndrs bndrs = everywhere $ mkT go
+setInlineOnBndrs :: DynFlags -> [CoreBndr] -> CoreBind -> CoreBind
+setInlineOnBndrs dflags bndrs = everywhere $ mkT go
   where
     go :: CoreBind -> CoreBind
     go (NonRec b expr) | any (b ==) bndrs =
-        NonRec (setAlwaysInlineOnBndr b) expr
+        NonRec (setAlwaysInlineOnBndr dflags b) expr
     go x = x
 
 #if MIN_VERSION_ghc(9,0,0)
@@ -292,25 +323,42 @@ hasInlineBinder bndr =
 -- Checks whether a case alternative contains a type with the
 -- annotation.  Only checks the first typed element in the list, so
 -- only pass alternatives from one case expression.
-altsContainsAnn :: UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
-altsContainsAnn _ [] = Nothing
-altsContainsAnn anns (bndr@(ALT_CONSTR(DataAlt dcon,_,_)):_) =
-    case lookupUFM anns (GET_NAME $ dataConTyCon dcon) of
-        Nothing -> Nothing
-        Just _ -> Just bndr
-altsContainsAnn anns ((ALT_CONSTR(DEFAULT,_,_)):alts) = altsContainsAnn anns alts
-altsContainsAnn _ _ = Nothing
+altsContainsAnn ::
+    DynFlags -> UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
+altsContainsAnn _ _ [] = Nothing
+altsContainsAnn _ _ ((ALT_CONSTR(DEFAULT,_,_)):[]) =
+    debug 2 "Case trivial default" Nothing
+altsContainsAnn dflags anns (bndr@(ALT_CONSTR(DataAlt dcon,_,_)):_) =
+    let name = GET_NAME $ dataConTyCon dcon
+        mesg = "Case DataAlt type " ++ showWithUnique dflags name
+    in case lookupUFM anns name of
+            Nothing -> debug 2 (mesg ++ " not annotated") Nothing
+            Just _ -> debug 2 (mesg ++ " annotated") (Just bndr)
+altsContainsAnn dflags anns ((ALT_CONSTR(DEFAULT,_,_)):alts) =
+    altsContainsAnn dflags anns alts
+altsContainsAnn _ _ ((ALT_CONSTR(LitAlt _,_,_)):_) =
+    debug 2 "Case LitAlt" Nothing
 
 getNonRecBinder :: CoreBind -> CoreBndr
 getNonRecBinder (NonRec b _) = b
 getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
 
 needInlineCaseAlt
-    :: CoreBind -> UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
-needInlineCaseAlt parent anns bndr =
-    case altsContainsAnn anns bndr of
-        Just alt | not (hasInlineBinder $ getNonRecBinder parent) -> Just alt
-        _ -> Nothing
+    :: DynFlags
+    -> [CoreBind]
+    -> UNIQ_FM
+    -> [Alt CoreBndr]
+    -> Maybe (Alt CoreBndr)
+needInlineCaseAlt dflags parents anns bndr =
+    let mesg = "Binder: " ++ listPath dflags parents
+    in if not (hasInlineBinder $ getNonRecBinder (head parents))
+       then
+            debug 2
+                (mesg ++ " not inlined")
+                $ case altsContainsAnn dflags anns bndr of
+                    Just alt -> Just alt
+                    _ -> Nothing
+       else debug 2 (mesg ++ " already inlined") Nothing
 
 -------------------------------------------------------------------------------
 -- Determine if a let binder contains a case match on an annotated type
@@ -335,10 +383,11 @@ needInlineCaseAlt parent anns bndr =
 -- case alternative scrutinizing the annotated type for better errors with
 -- context.
 letBndrsThatAreCases
-    :: UNIQ_FM
+    :: DynFlags
+    -> UNIQ_FM
     -> CoreBind
     -> [([CoreBind], Alt CoreBndr)]
-letBndrsThatAreCases anns bind = goLet [] bind
+letBndrsThatAreCases dflags anns bind = goLet [] bind
   where
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
@@ -356,7 +405,7 @@ letBndrsThatAreCases anns bind = goLet [] bind
     -- let bindings.
     go parents True (Case _ _ _ alts) =
         let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents False expr1)
-        in case needInlineCaseAlt (head parents) anns alts of
+        in case needInlineCaseAlt dflags parents anns alts of
             Just x -> (parents, x) : binders
             Nothing -> binders
 
@@ -453,8 +502,8 @@ data Context = CaseAlt (Alt CoreBndr) | Constr DataCon
 -- anywhere in the binders, not just case match on entry or construction on
 -- return.
 --
-containsAnns :: UNIQ_FM -> CoreBind -> [([CoreBind], Context)]
-containsAnns anns bind =
+containsAnns :: DynFlags -> UNIQ_FM -> CoreBind -> [([CoreBind], Context)]
+containsAnns dflags anns bind =
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
     goLet [] bind
@@ -466,7 +515,7 @@ containsAnns anns bind =
     -- let bindings.
     go parents (Case _ _ _ alts) =
         let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
-        in case altsContainsAnn anns alts of
+        in case altsContainsAnn dflags anns alts of
             Just x -> (parents, CaseAlt x) : binders
             Nothing -> binders
 
@@ -508,21 +557,6 @@ containsAnns anns bind =
 --
 -- XXX we mark certain functions (e.g. toStreamK) with a NOFUSION
 -- annotation so that we do not report them.
-
-addMissingUnique :: (Outputable a, Uniquable a) => DynFlags -> a -> String
-addMissingUnique dflags bndr =
-    let suffix = showSDoc dflags $ ppr (getUnique bndr)
-        bndrName = showSDoc dflags $ ppr bndr
-    in if DL.isSuffixOf suffix bndrName
-       then bndrName
-       else bndrName ++ "_" ++ suffix
-
-listPath :: DynFlags -> [CoreBind] -> [Char]
-listPath dflags binds =
-      DL.intercalate "/"
-    $ reverse
-    $ map (addMissingUnique dflags)
-    $ map getNonRecBinder binds
 
 showDetailsCaseMatch
     :: DynFlags
@@ -568,9 +602,9 @@ showInfo parent dflags reportMode failIt
         tag uniqBinders annotated showDetails =
     when (uniqBinders /= []) $ do
         let mesg = "In "
-                  ++ addMissingUnique dflags parent
+                  ++ showWithUnique dflags parent
                   ++ " binders "
-                  ++ show (map (addMissingUnique dflags) (uniqBinders))
+                  ++ show (map (showWithUnique dflags) (uniqBinders))
                   ++ " " ++ tag
                   ++ " data types annotated with "
                   ++ showSDoc dflags (ppr Fuse)
@@ -584,18 +618,22 @@ showInfo parent dflags reportMode failIt
                         $ map (showDetails dflags reportMode) annotated
         when failIt $ error "failing"
 
-markInline :: ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
-markInline reportMode failIt transform guts = do
+markInline :: Int -> ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
+markInline pass reportMode failIt transform guts = do
     putMsgS $ "fusion-plugin: Checking bindings to inline..."
     dflags <- getDynFlags
     anns <- FMAP_SND getAnnotations deserializeWithData guts
     if (anyUFM (any (== Fuse)) anns)
-    then bindsOnlyPass (mapM (transformBind dflags anns)) guts
+    then do
+        r <- bindsOnlyPass (mapM (transformBind dflags anns)) guts
+        if dbgLevel > 0
+        then dumpCore 0 (text ("Fusion-plugin-" ++ show pass)) r
+        else return r
     else return guts
   where
     -- transformBind :: DynFlags -> UniqFM Unique [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns bind@(NonRec b _) = do
-        let patternMatches = letBndrsThatAreCases anns bind
+        let patternMatches = letBndrsThatAreCases dflags anns bind
         let uniqPat = DL.nub (map (getNonRecBinder. head . fst) patternMatches)
 
         let constrs = constructingBinders anns bind
@@ -623,7 +661,7 @@ markInline reportMode failIt transform guts = do
         let bind' = do
                 let allBinders = uniqPat ++ uniqConstr
                 if transform && (not $ null allBinders)
-                then setInlineOnBndrs allBinders bind
+                then setInlineOnBndrs dflags allBinders bind
                 else bind
         return bind'
 
@@ -637,9 +675,9 @@ markInline reportMode failIt transform guts = do
                 _ -> error "Bug: expecting NonRec binder"
 
 -- | Core pass to mark functions scrutinizing constructors marked with Fuse
-fusionMarkInline :: ReportMode -> Bool -> Bool -> CoreToDo
-fusionMarkInline opt failIt transform =
-    CoreDoPluginPass "Mark for inlining" (markInline opt failIt transform)
+fusionMarkInline :: Int -> ReportMode -> Bool -> Bool -> CoreToDo
+fusionMarkInline pass opt failIt transform =
+    CoreDoPluginPass "Mark for inlining" (markInline pass opt failIt transform)
 
 -------------------------------------------------------------------------------
 -- Simplification pass after marking inline
@@ -683,7 +721,7 @@ fusionReport mesg reportMode guts = do
   where
     transformBind :: DynFlags -> UNIQ_FM -> CoreBind -> CoreM ()
     transformBind dflags anns bind@(NonRec b _) = do
-        let results = containsAnns anns bind
+        let results = containsAnns dflags anns bind
 
         let getAlts x =
                 case x of
@@ -807,7 +845,7 @@ dumpSDoc dflags print_unqual
   where dump_style = mkDumpStyle dflags print_unqual
 #endif
 
--- dump core not supported on 9.0.0
+-- dump core not supported on 9.0.0, 9.0.0 does not export Logger
 #if __GLASGOW_HASKELL__!=900
 -- Only for GHC versions >= 9.2.0
 #if MIN_VERSION_ghc(9,2,0)
@@ -884,7 +922,8 @@ dumpResult logger dflags print_unqual counter todo binds rules =
     dumpPassResult logger1 dflags print_unqual hdr (text "") binds rules
 #else
 dumpResult dflags print_unqual counter todo binds rules =
-    dumpPassResult dflags print_unqual suffix hdr (text "") binds rules
+    dumpPassResult
+        dflags print_unqual (suffix ++ "dump-simpl") hdr (text "") binds rules
 #endif
 
     where
@@ -910,33 +949,33 @@ dumpResult dflags print_unqual counter todo binds rules =
 #elif MIN_VERSION_ghc(9,2,0)
     logger1 = logger
 #endif
+#endif
 
 dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
-dumpCore counter todo
-    guts@(ModGuts
-        { mg_rdr_env = rdr_env
-        , mg_binds = binds
-        , mg_rules = rules
-        }) = do
+dumpCore counter title guts = do
     dflags <- getDynFlags
     putMsgS $ "fusion-plugin: dumping core "
-        ++ show counter ++ " " ++ showSDoc dflags todo
+        ++ show counter ++ " " ++ showSDoc dflags title
 
 #if MIN_VERSION_ghc(9,2,0)
     hscEnv <- getHscEnv
     let logger = hsc_logger hscEnv
-    let print_unqual = mkPrintUnqualified (hsc_unit_env hscEnv) rdr_env
+    let print_unqual =
+            mkPrintUnqualified (hsc_unit_env hscEnv) (mg_rdr_env guts)
     liftIO $ dumpResult logger dflags print_unqual counter
-                todo binds rules
+                title (mg_binds guts) (mg_rules guts)
+#elif MIN_VERSION_ghc(9,0,0)
+    putMsgS $ "fusion-plugin: dump-core not supported on GHC 9.0 "
 #else
-    let print_unqual = mkPrintUnqualified dflags rdr_env
-    liftIO $ dumpResult dflags print_unqual counter todo binds rules
+    let print_unqual = mkPrintUnqualified dflags (mg_rdr_env guts)
+    liftIO $ dumpResult dflags print_unqual counter
+                title (mg_binds guts) (mg_rules guts)
 #endif
     return guts
 
 dumpCorePass :: Int -> SDoc -> CoreToDo
-dumpCorePass counter todo =
-    CoreDoPluginPass "Fusion plugin dump core" (dumpCore counter todo)
+dumpCorePass counter title =
+    CoreDoPluginPass "Fusion plugin dump core" (dumpCore counter title)
 
 _insertDumpCore :: [CoreToDo] -> [CoreToDo]
 _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
@@ -945,7 +984,6 @@ _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
     go counter (todo:rest) =
         todo : dumpCorePass counter (text "After " GhcPlugins.<> ppr todo)
              : go (counter + 1) rest
-#endif
 
 -------------------------------------------------------------------------------
 -- Install our plugin core pass
@@ -982,18 +1020,16 @@ install args todos = do
     --
     -- TODO do not run simplify if we did not do anything in markInline phase.
     return $
-#if __GLASGOW_HASKELL__!=900
         (if optionsDumpCore options
          then _insertDumpCore
          else id) $
-#endif
         insertAfterSimplPhase0
             todos
-            [ fusionMarkInline ReportSilent False True
+            [ fusionMarkInline 1 ReportSilent False True
             , fusionSimplify hscEnv dflags
-            , fusionMarkInline ReportSilent False True
+            , fusionMarkInline 2 ReportSilent False True
             , fusionSimplify hscEnv dflags
-            , fusionMarkInline ReportSilent False True
+            , fusionMarkInline 3 ReportSilent False True
             , fusionSimplify hscEnv dflags
             -- This lets us know what was left unfused after all the inlining
             -- and case-of-case transformations.
