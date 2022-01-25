@@ -159,7 +159,7 @@ import Fusion.Plugin.Types (Fuse(..))
 -- XXX Can use the debugLevel from dflags
 -- Increase this level to see debug output
 dbgLevel :: Int
-dbgLevel = 0
+dbgLevel = 2
 
 debug :: Int -> String -> a -> a
 debug level str x =
@@ -291,7 +291,8 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
     go :: CoreBind -> CoreBind
     go (NonRec b expr) | any (b ==) bndrs =
         NonRec (setAlwaysInlineOnBndr dflags b) expr
-    go x = x
+    go x@(NonRec b _) = debug 2 ("Skipping NonRec binder " ++ showWithUnique dflags b) x
+    go x@(Rec _) = debug 2 "Skipping Rec binder" x
 
 #if MIN_VERSION_ghc(9,0,0)
 #define IS_ACTIVE isActive (Phase 0)
@@ -325,9 +326,9 @@ hasInlineBinder bndr =
 -- only pass alternatives from one case expression.
 altsContainsAnn ::
     DynFlags -> UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
-altsContainsAnn _ _ [] = Nothing
+altsContainsAnn _ _ [] = debug 2 "Empty alts" Nothing
 altsContainsAnn _ _ ((ALT_CONSTR(DEFAULT,_,_)):[]) =
-    debug 2 "Case trivial default" Nothing
+    debug 2 "Case last default" Nothing
 altsContainsAnn dflags anns (bndr@(ALT_CONSTR(DataAlt dcon,_,_)):_) =
     let name = GET_NAME $ dataConTyCon dcon
         mesg = "Case DataAlt type " ++ showWithUnique dflags name
@@ -335,9 +336,9 @@ altsContainsAnn dflags anns (bndr@(ALT_CONSTR(DataAlt dcon,_,_)):_) =
             Nothing -> debug 2 (mesg ++ " not annotated") Nothing
             Just _ -> debug 2 (mesg ++ " annotated") (Just bndr)
 altsContainsAnn dflags anns ((ALT_CONSTR(DEFAULT,_,_)):alts) =
-    altsContainsAnn dflags anns alts
+    debug 2 "Case default, skipping" (altsContainsAnn dflags anns alts)
 altsContainsAnn _ _ ((ALT_CONSTR(LitAlt _,_,_)):_) =
-    debug 2 "Case LitAlt" Nothing
+    debug 2 "Case LitAlt, aborting" Nothing
 
 getNonRecBinder :: CoreBind -> CoreBndr
 getNonRecBinder (NonRec b _) = b
@@ -349,15 +350,13 @@ needInlineCaseAlt
     -> UNIQ_FM
     -> [Alt CoreBndr]
     -> Maybe (Alt CoreBndr)
-needInlineCaseAlt dflags parents anns bndr =
+needInlineCaseAlt dflags parents anns alts =
     let mesg = "Binder: " ++ listPath dflags parents
     in if not (hasInlineBinder $ getNonRecBinder (head parents))
        then
-            debug 2
-                (mesg ++ " not inlined")
-                $ case altsContainsAnn dflags anns bndr of
-                    Just alt -> Just alt
-                    _ -> Nothing
+            case altsContainsAnn dflags anns alts of
+                Just alt -> debug 2 (mesg ++ " must be inlined") (Just alt)
+                Nothing -> debug 2 (mesg ++ " no annotation found") Nothing
        else debug 2 (mesg ++ " already inlined") Nothing
 
 -------------------------------------------------------------------------------
@@ -444,11 +443,15 @@ letBndrsThatAreCases dflags anns bind = goLet [] bind
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
-needInlineTyCon :: CoreBind -> UNIQ_FM -> TyCon -> Bool
-needInlineTyCon parent anns tycon =
-    case lookupUFM anns (GET_NAME tycon) of
-        Just _ | not (hasInlineBinder $ getNonRecBinder parent) -> True
-        _ -> False
+needInlineTyCon :: DynFlags -> CoreBind -> UNIQ_FM -> TyCon -> Bool
+needInlineTyCon dflags parent anns tycon =
+    let name = GET_NAME tycon
+        p = getNonRecBinder parent
+        mesg = "TyCon " ++ showWithUnique dflags name ++ " parent " ++ showWithUnique dflags p
+    in case lookupUFM anns name of
+            Just _ | not (hasInlineBinder $ getNonRecBinder parent) -> debug 2 (mesg ++ " annotated") True
+            Just _ -> debug 2 (mesg ++ " Already inlined") False
+            Nothing -> debug 2 (mesg ++ " Not annotated") True
 
 -- XXX Currently this function and containsAnns are equivalent. So containsAnns
 -- can be used in place of this. But we may want to restrict this to certain
@@ -458,8 +461,8 @@ needInlineTyCon parent anns tycon =
 -- constructor is directly used in the binder definition rather than through an
 -- identifier.
 --
-constructingBinders :: UNIQ_FM -> CoreBind -> [([CoreBind], Id)]
-constructingBinders anns bind = goLet [] bind
+constructingBinders :: DynFlags -> UNIQ_FM -> CoreBind -> [([CoreBind], Id)]
+constructingBinders dflags anns bind = goLet [] bind
   where
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
@@ -468,21 +471,45 @@ constructingBinders anns bind = goLet [] bind
 
     -- Enter a new let binding inside the current expression and traverse the
     -- let expression as well.
-    go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
+    go parents (Let bndr expr1) = goLet parents bndr ++
+        debug 2 "constructingBinders: entering let expr"
+            (go parents expr1)
 
     -- Traverse these to discover new let bindings
     go parents (Case _ _ _ alts) =
-        alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
-    go parents (App expr1 expr2) = go parents expr1 ++ go parents expr2
-    go parents (Lam _ expr1) = go parents expr1
-    go parents (Cast expr1 _) = go parents expr1
+        debug 2 "constructingBinders: entering Case alts"
+            (alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1))
+    go parents (App expr1 expr2) =
+        debug 2 "constructingBinders: entering App expr" (go parents expr1)
+            ++ debug 2 "constructingBinders: entering App Arg" (go parents expr2)
+    go parents (Lam _ expr1) =
+        debug 2 ("constructingBinders: entering Lam: ")
+            (go parents expr1)
+    go parents (Cast expr1 _) =
+        debug 2 ("constructingBinders: entering Cast: ")
+            (go parents expr1)
 
     -- Check if the Var is a data constructor of interest
     go parents (Var i) =
-        let needInline = needInlineTyCon (head parents) anns
-        in case tyConAppTyConPicky_maybe (varType i) of
-            Just tycon | needInline tycon -> [(parents, i)]
-            _ -> []
+        let vname = showWithUnique dflags (varName i)
+            vtype = showSDoc dflags (ppr (varType i))
+        in debug 2 ("constructingBinders: entering Var: "
+            ++ vname ++ " (" ++ vtype ++ ")")
+            (let needInline = needInlineTyCon dflags (head parents) anns
+            in case tyConAppTyConPicky_maybe (dropForAlls (varType i)) of
+                Just tycon | needInline tycon ->
+                    -- XXX If the parent of an inlined let binding is a join point then it must
+                    -- be inlined.
+                    let inlinings =
+                            case parents of
+                                [] -> []
+                                [_] -> [(parents, i)]
+                                _ : xs -> [(parents, i), (xs, i)]
+                     in debug 2 ("constructingBinders: Var need inline. " ++ vname) inlinings
+                Just _ ->
+                    debug 2 ("constructingBinders: Var Just skipped. " ++ vname) []
+                Nothing ->
+                    debug 2 ("constructingBinders: Var skipped. " ++ vname) [])
 
     go _ (Lit _) = []
     go _ (Tick _ _) = []
@@ -490,7 +517,8 @@ constructingBinders anns bind = goLet [] bind
     go _ (Coercion _) = []
 
     goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Id)]
-    goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
+    goLet parents bndr@(NonRec b expr1) =
+        debug 2 ("constructingBinders: Let binding: " ++ showWithUnique dflags b) (go (bndr : parents) expr1)
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
@@ -641,10 +669,10 @@ markInline pass reportMode failIt transform guts = do
     -- transformBind :: DynFlags -> UniqFM Unique [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind dflags anns bind@(NonRec b _) = do
         let patternMatches = letBndrsThatAreCases dflags anns bind
-        let uniqPat = DL.nub (map (getNonRecBinder. head . fst) patternMatches)
+        let uniqPat = DL.nub (map (getNonRecBinder . head . fst) patternMatches)
 
-        let constrs = constructingBinders anns bind
-        let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
+        let constrs = constructingBinders dflags anns bind
+        let uniqConstr = DL.nub (map (getNonRecBinder . head . fst) constrs)
 
         -- TBD: For ReportWarn level prepare a single consolidated list of
         -- paths with one entry for each binder and giving one example of what
@@ -665,8 +693,13 @@ markInline pass reportMode failIt transform guts = do
                 showInfo b dflags reportMode failIt "CONSTRUCT"
                     uniqConstr constrs showDetailsConstr
 
+        let allBinders = uniqPat ++ uniqConstr
+        putMsgS "------------------------------------------"
+        debug 2 ("Binders to inline in " ++ showWithUnique dflags b
+            ++ " [" ++ show (map (showWithUnique dflags) uniqConstr) ++ "]") (return ())
+        putMsgS "------------------------------------------"
+
         let bind' = do
-                let allBinders = uniqPat ++ uniqConstr
                 if transform && (not $ null allBinders)
                 then setInlineOnBndrs dflags allBinders bind
                 else bind
@@ -676,6 +709,8 @@ markInline pass reportMode failIt transform guts = do
         fmap Rec (mapM transformAsNonRec bs)
       where
         transformAsNonRec (b, expr) = do
+            debug 2 ("Transforming Rec binder as NonRec " ++ showWithUnique dflags b) (return ())
+            -- XXX What is "b" is Rec?
             r <- transformBind dflags anns (NonRec b expr)
             case r of
                 NonRec b1 expr1 -> return (b1, expr1)
