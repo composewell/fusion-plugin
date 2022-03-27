@@ -82,4 +82,4 @@ with that would be appreciated.
 ## References
 
 * [Stream Fusion: Practical shortcut fusion for coinductive sequence types](https://ora.ox.ac.uk/objects/uuid:b4971f57-2b94-4fdf-a5c0-98d6935a44da)
-* [Stream Fusion From Lists to Streams to Nothing at All](http://fun.cs.tufts.edu/stream-fusion.pdf)
+* [Stream Fusion From Lists to Streams to Nothing at All](https://www.researchgate.net/publication/221241130_Stream_Fusion_From_Lists_to_Streams_to_Nothing_at_All)
