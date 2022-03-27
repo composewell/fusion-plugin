@@ -61,7 +61,6 @@ import qualified Data.List as DL
 -- Imports for specific compiler versions
 #if MIN_VERSION_ghc(9,2,0)
 import Data.Char (isSpace)
-import Debug.Trace (trace)
 import Text.Printf (printf)
 import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
 import GHC.Types.Name.Ppr (mkPrintUnqualified)
@@ -926,7 +925,7 @@ dumpResult logger dflags print_unqual counter todo binds rules =
 #else
 dumpResult dflags print_unqual counter todo binds rules =
     dumpPassResult
-        dflags print_unqual (suffix ++ "dump-simpl") hdr (text "") binds rules
+        dflags print_unqual (_suffix ++ "dump-simpl") hdr (text "") binds rules
 #endif
 
     where
@@ -936,7 +935,7 @@ dumpResult dflags print_unqual counter todo binds rules =
         GhcPlugins.<> text "] "
         GhcPlugins.<> todo
 
-    suffix = printf "%02d" counter ++ "-"
+    _suffix = printf "%02d" counter ++ "-"
         ++ (map (\x -> if isSpace x then '-' else x)
                $ filterOutLast isSpace
                $ takeWhile (/= '(')
@@ -946,8 +945,8 @@ dumpResult dflags print_unqual counter todo binds rules =
 #if MIN_VERSION_ghc(9,3,0)
     prefix =
         case log_dump_prefix (logFlags logger) of
-            Nothing -> Just suffix
-            Just x -> Just (x ++ suffix)
+            Nothing -> Just _suffix
+            Just x -> Just (x ++ _suffix)
     logger1 = logger {logFlags = (logFlags logger) {log_dump_prefix = prefix}}
 #elif MIN_VERSION_ghc(9,2,0)
     logger1 = logger
