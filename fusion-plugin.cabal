@@ -30,7 +30,10 @@ maintainer:          streamly@composewell.com
 copyright:           (c) 2019 Composewell Technologies
 category:            Development
 extra-source-files:  CHANGELOG.md
+                     NOTICE
                      README.md
+                     design/rec-binder-example.core
+                     design/rec-binder-example.hs
                      stack.yaml
 
 source-repository head
