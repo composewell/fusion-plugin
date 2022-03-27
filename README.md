@@ -81,5 +81,5 @@ with that would be appreciated.
 
 ## References
 
-* [Stream Fusion: Practical shortcut fusion for coinductive sequence types](https://pdfs.semanticscholar.org/b109/dc862d03c3ab0f3a2346e0685aa94e07f4c1.pdf)
+* [Stream Fusion: Practical shortcut fusion for coinductive sequence types](https://ora.ox.ac.uk/objects/uuid:b4971f57-2b94-4fdf-a5c0-98d6935a44da)
 * [Stream Fusion From Lists to Streams to Nothing at All](http://fun.cs.tufts.edu/stream-fusion.pdf)
