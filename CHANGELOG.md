@@ -1,3 +1,8 @@
+## 0.2.4
+
+* Suport ghc-9.2.2
+* `dump-core` CLI flag support for ghc-9.2.x
+
 ## 0.2.3
 
 * Enhancement: Support ghc-9.0.1

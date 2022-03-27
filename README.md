@@ -52,7 +52,7 @@ and pass the following to your ghc-options:
 
 ### Plugin options
 
-Note: dump-core does not work for GHC-9.0.1 and above
+Note: dump-core does not work for GHC-9.0.x.
 
 `-fplugin-opt=Fusion.Plugin:dump-core`: dump core after each
 core-to-core transformation. Output from each transformation is printed
