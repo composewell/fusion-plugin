@@ -20,7 +20,11 @@ homepage:            https://github.com/composewell/fusion-plugin
 bug-reports:         https://github.com/composewell/fusion-plugin/issues
 license:             Apache-2.0
 license-file:        LICENSE
-tested-with:         GHC==8.6.5, GHC==8.8.4, GHC==8.10.4, GHC==9.0.1
+tested-with:         GHC==8.6.5
+                   , GHC==8.8.4
+                   , GHC==8.10.7
+                   , GHC==9.0.2
+                   , GHC==9.2.2
 author:              Pranay Sashank
 maintainer:          streamly@composewell.com
 copyright:           (c) 2019 Composewell Technologies
