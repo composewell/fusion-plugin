@@ -700,6 +700,9 @@ fusionSimplify _hsc_env dflags =
             , sm_pre_inline = gopt Opt_SimplPreInlining dflags
             , sm_logger = logger
 #endif
+#if MIN_VERSION_ghc(9,2,2)
+            , sm_cast_swizzle = True
+#endif
             }
 
 #if MIN_VERSION_ghc(9,2,0)
