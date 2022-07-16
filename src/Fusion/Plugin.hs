@@ -56,6 +56,7 @@ import Control.Monad.Trans.State (StateT, evalStateT, get, put)
 import Data.Maybe (mapMaybe)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
+import Debug.Trace (trace)
 import qualified Data.List as DL
 
 -- Imports for specific compiler versions
@@ -684,9 +685,8 @@ fusionMarkInline pass opt failIt transform =
 
 fusionSimplify :: HscEnv -> DynFlags -> CoreToDo
 fusionSimplify _hsc_env dflags =
-    CoreDoSimplify
-        (maxSimplIterations dflags)
-        SimplMode
+    let mode =
+            SimplMode
             { sm_phase = InitialPhase
             , sm_names = ["Fusion Plugin Inlining"]
             , sm_dflags = dflags
@@ -697,15 +697,20 @@ fusionSimplify _hsc_env dflags =
 #if MIN_VERSION_ghc(9,2,0)
             , sm_uf_opts = unfoldingOpts dflags
             , sm_pre_inline = gopt Opt_SimplPreInlining dflags
-            , sm_logger = logger
+            , sm_logger = hsc_logger _hsc_env
 #endif
 #if MIN_VERSION_ghc(9,2,2)
             , sm_cast_swizzle = True
 #endif
+#if MIN_VERSION_ghc(9,4,0)
+            , sm_float_enable = floatEnable dflags
+#endif
             }
-
-#if MIN_VERSION_ghc(9,2,0)
-    where logger = hsc_logger _hsc_env
+    in CoreDoSimplify
+#if MIN_VERSION_ghc(9,4,0)
+        (CoreDoSimplifyOpts (maxSimplIterations dflags) mode)
+#else
+        (maxSimplIterations dflags) mode
 #endif
 
 -------------------------------------------------------------------------------
@@ -942,11 +947,8 @@ dumpResult dflags print_unqual counter todo binds rules =
                $ showSDoc dflags todo)
         ++ "."
 
-#if MIN_VERSION_ghc(9,3,0)
-    prefix =
-        case log_dump_prefix (logFlags logger) of
-            Nothing -> Just _suffix
-            Just x -> Just (x ++ _suffix)
+#if MIN_VERSION_ghc(9,4,0)
+    prefix = log_dump_prefix (logFlags logger) ++ _suffix
     logger1 = logger {logFlags = (logFlags logger) {log_dump_prefix = prefix}}
 #elif MIN_VERSION_ghc(9,2,0)
     logger1 = logger
@@ -1000,10 +1002,17 @@ insertAfterSimplPhase0 origTodos ourTodos report =
   where
     go False [] = error "Simplifier phase 0/\"main\" not found"
     go True [] = []
+#if MIN_VERSION_ghc(9,4,0)
+    go _ (todo@(CoreDoSimplify (CoreDoSimplifyOpts _ SimplMode
+            { sm_phase = Phase 0
+            , sm_names = ["main"]
+            })):todos)
+#else
     go _ (todo@(CoreDoSimplify _ SimplMode
             { sm_phase = Phase 0
             , sm_names = ["main"]
             }):todos)
+#endif
         = todo : ourTodos ++ go True todos
     go found (todo:todos) = todo : go found todos
 
