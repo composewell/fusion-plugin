@@ -15,7 +15,7 @@ environment:
     # ------------------------------------------------------------------------
     # Common options
     # ------------------------------------------------------------------------
-    GHC_OPTIONS: "-Werror"
+    #GHC_OPTIONS: "-Werror"
     CABAL_REINIT_CONFIG: "y"
     LC_ALL: "C.UTF-8"
 
