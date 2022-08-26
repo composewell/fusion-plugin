@@ -2,3 +2,4 @@
 .github/workflows/haskell.yml
 .gitignore
 appveyor.yml
+cabal.project.ghc-head

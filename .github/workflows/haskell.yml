@@ -27,6 +27,8 @@ jobs:
 
       BUILD: ${{ matrix.build }}
       GHCVER: ${{ matrix.ghc_version }}
+      CABALVER: ${{ matrix.cabal_version }}
+      CABAL_PROJECT: ${{ matrix.cabal_project }}
       CABAL_BUILD_OPTIONS: ${{ matrix.cabal_build_options }}
       DISABLE_SDIST_BUILD: ${{ matrix.disable_sdist_build }}
 
@@ -34,9 +36,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [9.4.2, 9.2.4, 9.0.2, 8.10.7, 8.10.7+macOS, 8.8.4, 8.6.5, 8.4.4]
-        cabal_version: ["3.8"]
+        name: [head, 9.4.2, 9.2.4, 9.0.2, 8.10.7, 8.10.7+macOS, 8.8.4, 8.6.5, 8.4.4]
+        cabal_version: ["3.8.1.0"]
         include:
+          - name: head
+            ghc_version: head
+            runner: ubuntu-latest
+            build: cabal
+            cabal_project: cabal.project.ghc-head
           - name: 9.4.2
             ghc_version: 9.4.2
             build: cabal-v2
@@ -74,11 +81,6 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
-    - uses: haskell/actions/setup@v1
-      with:
-        ghc-version: ${{ matrix.ghc_version }}
-        cabal-version: ${{ matrix.cabal_version }}
-
     - uses: actions/cache@v1
       name: Cache ~/.cabal
       with:
@@ -96,6 +98,32 @@ jobs:
         PACKCHECK_URL=${PACKCHECK_GITHUB_URL}/${PACKCHECK_GITHUB_COMMIT}/packcheck.sh
         if test ! -e "$PACKCHECK_LOCAL_PATH"; then $CURL -sL -o "$PACKCHECK_LOCAL_PATH" $PACKCHECK_URL; fi;
         chmod +x $PACKCHECK_LOCAL_PATH
+
+        os=$(uname -s -m)
+        case "$os" in
+          "Linux x86_64") GHCUP_ARCH="x86_64-linux" ;;
+          "Darwin x86_64") GHCUP_ARCH="x86_64-apple-darwin" ;;
+          *) echo "Unknown OS/Arch: $os"; exit 1;;
+        esac
+
+        # Check available versions here: https://downloads.haskell.org/~ghcup/
+        GHCUP_VER=0.1.18.0
+        $CURL -sL -o ./ghcup https://downloads.haskell.org/~ghcup/$GHCUP_VER/${GHCUP_ARCH}-ghcup-$GHCUP_VER
+        chmod +x ./ghcup
+        if test "$GHCVER" = "head"
+        then
+          # The URL may change, to find a working URL go to https://gitlab.haskell.org/ghc/ghc/-/jobs/
+          # Find a debian10 job, click on a passed/failed job, at the
+          # end of the output you will find the tar.xz name, put that after
+          # "raw/", and put the job name after "job=".
+          # Also see https://github.com/mpickering/ghc-artefact-nix/blob/master/gitlab-artifact.nix
+          ./ghcup install ghc -u https://gitlab.haskell.org/ghc/ghc/-/jobs/artifacts/master/raw/ghc-x86_64-linux-deb10-int_native-validate.tar.xz?job=x86_64-linux-deb10-int_native-validate head
+        else
+          ./ghcup install ghc $GHCVER
+        fi
+        ./ghcup install cabal $CABALVER
+        ./ghcup set ghc $GHCVER
+        ./ghcup set cabal $CABALVER
 
     - name: Run packcheck
       run: |
