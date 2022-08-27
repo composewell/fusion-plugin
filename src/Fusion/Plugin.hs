@@ -58,36 +58,6 @@ import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
 import Debug.Trace (trace)
 import qualified Data.List as DL
-
--- Imports for specific compiler versions
-#if MIN_VERSION_ghc(9,2,0)
-import Data.Char (isSpace)
-import Text.Printf (printf)
-import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
-import GHC.Types.Name.Ppr (mkPrintUnqualified)
-import GHC.Utils.Logger (Logger)
-#endif
-
--- dump-core option related imports
-#if MIN_VERSION_ghc(9,3,0)
-import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
-#elif MIN_VERSION_ghc(9,2,0)
-import GHC.Utils.Logger (putDumpMsg)
-#elif MIN_VERSION_ghc(9,0,0)
--- dump core option not supported
-#else
-import Control.Monad (unless)
-import Data.Char (isSpace)
-import Data.IORef (readIORef, writeIORef)
-import Data.Time (getCurrentTime)
-import System.Directory (createDirectoryIfMissing)
-import System.FilePath ((</>), takeDirectory)
-import System.IO (Handle, IOMode(..), withFile, hSetEncoding, utf8)
-import Text.Printf (printf)
-import ErrUtils (mkDumpDoc, Severity(..))
-import PprCore (pprCoreBindingsWithSize, pprRules)
-import qualified Data.Set as Set
-#endif
 #endif
 
 -- Implicit imports
@@ -100,6 +70,7 @@ import GhcPlugins
 
 -- Imports from this package
 import Fusion.Plugin.Types (Fuse(..))
+import qualified Fusion.Plugin.Ghc
 
 -- $using
 --
@@ -684,34 +655,7 @@ fusionMarkInline pass opt failIt transform =
 -------------------------------------------------------------------------------
 
 fusionSimplify :: HscEnv -> DynFlags -> CoreToDo
-fusionSimplify _hsc_env dflags =
-    let mode =
-            SimplMode
-            { sm_phase = InitialPhase
-            , sm_names = ["Fusion Plugin Inlining"]
-            , sm_dflags = dflags
-            , sm_rules = gopt Opt_EnableRewriteRules dflags
-            , sm_eta_expand = gopt Opt_DoLambdaEtaExpansion dflags
-            , sm_inline = True
-            , sm_case_case = True
-#if MIN_VERSION_ghc(9,2,0)
-            , sm_uf_opts = unfoldingOpts dflags
-            , sm_pre_inline = gopt Opt_SimplPreInlining dflags
-            , sm_logger = hsc_logger _hsc_env
-#endif
-#if MIN_VERSION_ghc(9,2,2)
-            , sm_cast_swizzle = True
-#endif
-#if MIN_VERSION_ghc(9,5,0)
-            , sm_float_enable = floatEnable dflags
-#endif
-            }
-    in CoreDoSimplify
-#if MIN_VERSION_ghc(9,5,0)
-        (CoreDoSimplifyOpts (maxSimplIterations dflags) mode)
-#else
-        (maxSimplIterations dflags) mode
-#endif
+fusionSimplify = Fusion.Plugin.Ghc.coreToDo
 
 -------------------------------------------------------------------------------
 -- Report unfused constructors
@@ -772,209 +716,12 @@ fusionReport mesg reportMode guts = do
 -- Dump core passes
 -------------------------------------------------------------------------------
 
--- Only for GHC versions before 9.0.0
-#if !MIN_VERSION_ghc(9,0,0)
-chooseDumpFile :: DynFlags -> FilePath -> Maybe FilePath
-chooseDumpFile dflags suffix
-        | Just prefix <- getPrefix
-
-        = Just $ setDir (prefix ++ suffix)
-
-        | otherwise
-
-        = Nothing
-
-        where getPrefix
-                 -- dump file location is being forced
-                 --      by the --ddump-file-prefix flag.
-               | Just prefix <- dumpPrefixForce dflags
-                  = Just prefix
-                 -- dump file location chosen by DriverPipeline.runPipeline
-               | Just prefix <- dumpPrefix dflags
-                  = Just prefix
-                 -- we haven't got a place to put a dump file.
-               | otherwise
-                  = Nothing
-              setDir f = case dumpDir dflags of
-                         Just d  -> d </> f
-                         Nothing ->       f
-
--- Copied from GHC.Utils.Logger
-withDumpFileHandle :: DynFlags -> FilePath -> (Maybe Handle -> IO ()) -> IO ()
-withDumpFileHandle dflags suffix action = do
-    let mFile = chooseDumpFile dflags suffix
-    case mFile of
-      Just fileName -> do
-        let gdref = generatedDumps dflags
-        gd <- readIORef gdref
-        let append = Set.member fileName gd
-            mode = if append then AppendMode else WriteMode
-        unless append $
-            writeIORef gdref (Set.insert fileName gd)
-        createDirectoryIfMissing True (takeDirectory fileName)
-        withFile fileName mode $ \handle -> do
-            -- We do not want the dump file to be affected by
-            -- environment variables, but instead to always use
-            -- UTF8. See:
-            -- https://gitlab.haskell.org/ghc/ghc/issues/10762
-            hSetEncoding handle utf8
-            action (Just handle)
-      Nothing -> action Nothing
-
-dumpSDocWithStyle :: PprStyle -> DynFlags -> FilePath -> String -> SDoc -> IO ()
-dumpSDocWithStyle sty dflags suffix hdr doc =
-    withDumpFileHandle dflags suffix writeDump
-  where
-    -- write dump to file
-    writeDump (Just handle) = do
-        doc' <- if null hdr
-                then return doc
-                else do t <- getCurrentTime
-                        let timeStamp = if (gopt Opt_SuppressTimestamps dflags)
-                                          then empty
-                                          else text (show t)
-                        let d = timeStamp
-                                $$ blankLine
-                                $$ doc
-                        return $ mkDumpDoc hdr d
-        defaultLogActionHPrintDoc dflags handle doc' sty
-
-    -- write the dump to stdout
-    writeDump Nothing = do
-        let (doc', severity)
-              | null hdr  = (doc, SevOutput)
-              | otherwise = (mkDumpDoc hdr doc, SevDump)
-        putLogMsg dflags NoReason severity noSrcSpan sty doc'
-
-dumpSDoc :: DynFlags -> PrintUnqualified -> FilePath -> String -> SDoc -> IO ()
-dumpSDoc dflags print_unqual
-    = dumpSDocWithStyle dump_style dflags
-  where dump_style = mkDumpStyle dflags print_unqual
-#endif
-
--- dump core not supported on 9.0.0, 9.0.0 does not export Logger
-#if __GLASGOW_HASKELL__!=900
--- Only for GHC versions >= 9.2.0
-#if MIN_VERSION_ghc(9,2,0)
-dumpPassResult ::
-      Logger
-   -> DynFlags
-   -> PrintUnqualified
-   -> SDoc                  -- Header
-   -> SDoc                  -- Extra info to appear after header
-   -> CoreProgram -> [CoreRule]
-   -> IO ()
-dumpPassResult logger dflags unqual hdr extra_info binds rules = do
-#if MIN_VERSION_ghc(9,3,0)
-    let flags = logFlags logger
-    let getDumpAction = putDumpFile
-#else
-    let flags = dflags
-    let getDumpAction = putDumpMsg
-#endif
-    (getDumpAction logger)
-        flags dump_style Opt_D_dump_simpl title undefined dump_doc
-
-    where
-
-    title = showSDoc dflags hdr
-
-    dump_style = mkDumpStyle unqual
-
-#else
-
-dumpPassResult :: DynFlags
-               -> PrintUnqualified
-               -> FilePath
-               -> SDoc                  -- Header
-               -> SDoc                  -- Extra info to appear after header
-               -> CoreProgram -> [CoreRule]
-               -> IO ()
-dumpPassResult dflags unqual suffix hdr extra_info binds rules = do
-   dumpSDoc dflags unqual suffix (showSDoc dflags hdr) dump_doc
-
-  where
-
-#endif
-    dump_doc  = vcat [ nest 2 extra_info
-                     , blankLine
-                     , pprCoreBindingsWithSize binds
-                     , ppUnless (null rules) pp_rules ]
-    pp_rules = vcat [ blankLine
-                    , text "------ Local rules for imported ids --------"
-                    , pprRules rules ]
-
-filterOutLast :: (a -> Bool) -> [a] -> [a]
-filterOutLast _ [] = []
-filterOutLast p [x]
-    | p x = []
-    | otherwise = [x]
-filterOutLast p (x:xs) = x : filterOutLast p xs
-
-dumpResult
-#if MIN_VERSION_ghc(9,2,0)
-    :: Logger
-    -> DynFlags
-#else
-    :: DynFlags
-#endif
-    -> PrintUnqualified
-    -> Int
-    -> SDoc
-    -> CoreProgram
-    -> [CoreRule]
-    -> IO ()
-#if MIN_VERSION_ghc(9,2,0)
-dumpResult logger dflags print_unqual counter todo binds rules =
-    dumpPassResult logger1 dflags print_unqual hdr (text "") binds rules
-#else
-dumpResult dflags print_unqual counter todo binds rules =
-    dumpPassResult
-        dflags print_unqual (_suffix ++ "dump-simpl") hdr (text "") binds rules
-#endif
-
-    where
-
-    hdr = text "["
-        GhcPlugins.<> int counter
-        GhcPlugins.<> text "] "
-        GhcPlugins.<> todo
-
-    _suffix = printf "%02d" counter ++ "-"
-        ++ (map (\x -> if isSpace x then '-' else x)
-               $ filterOutLast isSpace
-               $ takeWhile (/= '(')
-               $ showSDoc dflags todo)
-        ++ "."
-
-#if MIN_VERSION_ghc(9,4,0)
-    prefix = log_dump_prefix (logFlags logger) ++ _suffix
-    logger1 = logger {logFlags = (logFlags logger) {log_dump_prefix = prefix}}
-#elif MIN_VERSION_ghc(9,2,0)
-    logger1 = logger
-#endif
-#endif
-
 dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
 dumpCore counter title guts = do
     dflags <- getDynFlags
     putMsgS $ "fusion-plugin: dumping core "
         ++ show counter ++ " " ++ showSDoc dflags title
-
-#if MIN_VERSION_ghc(9,2,0)
-    hscEnv <- getHscEnv
-    let logger = hsc_logger hscEnv
-    let print_unqual =
-            mkPrintUnqualified (hsc_unit_env hscEnv) (mg_rdr_env guts)
-    liftIO $ dumpResult logger dflags print_unqual counter
-                title (mg_binds guts) (mg_rules guts)
-#elif MIN_VERSION_ghc(9,0,0)
-    putMsgS $ "fusion-plugin: dump-core not supported on GHC 9.0 "
-#else
-    let print_unqual = mkPrintUnqualified dflags (mg_rdr_env guts)
-    liftIO $ dumpResult dflags print_unqual counter
-                title (mg_binds guts) (mg_rules guts)
-#endif
+    Fusion.Plugin.Ghc.dumpCore counter title guts
     return guts
 
 dumpCorePass :: Int -> SDoc -> CoreToDo
@@ -1002,19 +749,10 @@ insertAfterSimplPhase0 origTodos ourTodos report =
   where
     go False [] = error "Simplifier phase 0/\"main\" not found"
     go True [] = []
-#if MIN_VERSION_ghc(9,5,0)
-    go _ (todo@(CoreDoSimplify (CoreDoSimplifyOpts _ SimplMode
-            { sm_phase = Phase 0
-            , sm_names = ["main"]
-            })):todos)
-#else
-    go _ (todo@(CoreDoSimplify _ SimplMode
-            { sm_phase = Phase 0
-            , sm_names = ["main"]
-            }):todos)
-#endif
-        = todo : ourTodos ++ go True todos
-    go found (todo:todos) = todo : go found todos
+    go found (todo:todos) =
+        if Fusion.Plugin.Ghc.isPhase0MainTodo todo
+        then todo : ourTodos ++ go True todos
+        else todo : go found todos
 
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos = do
@@ -1058,9 +796,6 @@ install _ todos = do
 #endif
 
 plugin :: Plugin
-plugin = defaultPlugin
+plugin = Fusion.Plugin.Ghc.defaultPurePlugin
     { installCoreToDos = install
-#if MIN_VERSION_ghc(8,6,0)
-    , pluginRecompile = purePlugin
-#endif
     }
