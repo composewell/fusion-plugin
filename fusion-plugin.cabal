@@ -45,6 +45,31 @@ source-repository head
 
 library
   exposed-modules:     Fusion.Plugin
+  other-modules:
+                       Fusion.Plugin.Ghc
+  if impl(ghc >= 9.5.0)
+    other-modules:
+                       Fusion.Plugin.GhcHead
+  elif impl(ghc >= 9.4.0)
+    other-modules:
+                       Fusion.Plugin.Ghc940
+  elif impl(ghc >= 9.3.0)
+    other-modules:
+                       Fusion.Plugin.Ghc930
+  elif impl(ghc >= 9.2.2)
+    other-modules:
+                       Fusion.Plugin.Ghc922
+  elif impl(ghc >= 9.2.0)
+    other-modules:
+                       Fusion.Plugin.Ghc920
+  elif impl(ghc >= 9.0.0)
+    other-modules:
+                       Fusion.Plugin.Ghc900
+  else
+    if impl(ghc >= 8.6.0)
+      other-modules:
+                       Fusion.Plugin.Ghc860
+
   build-depends:       base         >= 4.0     && <  5.0
                      , containers   >= 0.5.6.2 && <  0.7
                      , directory    >= 1.2.2.0 && <  1.4
