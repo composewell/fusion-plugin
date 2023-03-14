@@ -60,17 +60,25 @@ import Debug.Trace (trace)
 import qualified Data.List as DL
 
 -- Imports for specific compiler versions
+#if MIN_VERSION_ghc(9,6,1)
+import GHC.Core.Opt.Simplify.Env (SimplMode(..))
+import GHC.Core.Opt.Simplify (SimplifyOpts(..))
+import GHC.Driver.Config.Core.Opt.Simplify (initSimplMode, initSimplifyOpts)
+#endif
+
 #if MIN_VERSION_ghc(9,2,0)
+{-
 import Data.Char (isSpace)
 import Text.Printf (printf)
 import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
 import GHC.Types.Name.Ppr (mkPrintUnqualified)
 import GHC.Utils.Logger (Logger)
+-}
 #endif
 
 -- dump-core option related imports
 #if MIN_VERSION_ghc(9,3,0)
-import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
+-- import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
 #elif MIN_VERSION_ghc(9,2,0)
 import GHC.Utils.Logger (putDumpMsg)
 #elif MIN_VERSION_ghc(9,0,0)
@@ -93,7 +101,7 @@ import qualified Data.Set as Set
 -- Implicit imports
 #if MIN_VERSION_ghc(9,0,0)
 import GHC.Plugins
-import qualified GHC.Plugins as GhcPlugins
+-- import qualified GHC.Plugins as GhcPlugins
 #else
 import GhcPlugins
 #endif
@@ -263,7 +271,7 @@ parseOptions args = do
 
 unfoldCompulsory :: Arity -> Unfolding -> Unfolding
 unfoldCompulsory arity cuf@CoreUnfolding{} =
-    cuf {uf_src=InlineStable, uf_guidance = UnfWhen arity True True}
+    cuf {uf_src=StableSystemSrc, uf_guidance = UnfWhen arity True True}
 unfoldCompulsory _ x = x -- NoUnfolding
 
 -- Sets the inline pragma on a bndr, and forgets the unfolding.
@@ -625,16 +633,19 @@ showInfo parent dflags reportMode failIt
         when failIt $ error "failing"
 
 markInline :: Int -> ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
-markInline pass reportMode failIt transform guts = do
+markInline _pass reportMode failIt transform guts = do
     putMsgS $ "fusion-plugin: Checking bindings to inline..."
     dflags <- getDynFlags
     anns <- FMAP_SND getAnnotations deserializeWithData guts
     if (anyUFM (any (== Fuse)) anns)
     then do
         r <- bindsOnlyPass (mapM (transformBind dflags anns)) guts
+        {-
         if dbgLevel > 0
         then dumpCore 0 (text ("Fusion-plugin-" ++ show pass)) r
         else return r
+        -}
+        return r
     else return guts
   where
     -- transformBind :: DynFlags -> UniqFM Unique [Fuse] -> CoreBind -> CoreM CoreBind
@@ -691,7 +702,8 @@ fusionMarkInline pass opt failIt transform =
 
 fusionSimplify :: HscEnv -> DynFlags -> CoreToDo
 fusionSimplify _hsc_env dflags =
-    let mode =
+    let mode = initSimplMode dflags InitialPhase "Fusion Plugin Inlining"
+    {-
             SimplMode
             { sm_phase = InitialPhase
             , sm_names = ["Fusion Plugin Inlining"]
@@ -712,8 +724,11 @@ fusionSimplify _hsc_env dflags =
             , sm_float_enable = floatEnable dflags
 #endif
             }
+    -}
     in CoreDoSimplify
-#if MIN_VERSION_ghc(9,5,0)
+#if MIN_VERSION_ghc(9,6,1)
+        (initSimplifyOpts dflags [] (maxSimplIterations dflags) mode undefined)
+#elif MIN_VERSION_ghc(9,5,0)
         (CoreDoSimplifyOpts (maxSimplIterations dflags) mode)
 #else
         (maxSimplIterations dflags) mode
@@ -778,6 +793,7 @@ fusionReport mesg reportMode guts = do
 -- Dump core passes
 -------------------------------------------------------------------------------
 
+{-
 -- Only for GHC versions before 9.0.0
 #if !MIN_VERSION_ghc(9,0,0)
 chooseDumpFile :: DynFlags -> FilePath -> Maybe FilePath
@@ -994,6 +1010,7 @@ _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
     go counter (todo:rest) =
         todo : dumpCorePass counter (text "After " GhcPlugins.<> ppr todo)
              : go (counter + 1) rest
+-}
 
 -------------------------------------------------------------------------------
 -- Install our plugin core pass
@@ -1009,10 +1026,16 @@ insertAfterSimplPhase0 origTodos ourTodos report =
     go False [] = error "Simplifier phase 0/\"main\" not found"
     go True [] = []
 #if MIN_VERSION_ghc(9,5,0)
-    go _ (todo@(CoreDoSimplify (CoreDoSimplifyOpts _ SimplMode
-            { sm_phase = Phase 0
-            , sm_names = ["main"]
-            })):todos)
+    go _ (todo@(CoreDoSimplify
+        (SimplifyOpts
+            { so_mode =
+                (SimplMode
+                    { sm_phase = Phase 0
+                    , sm_names = ["main"]
+                    }
+                )
+            }
+        )):todos)
 #else
     go _ (todo@(CoreDoSimplify _ SimplMode
             { sm_phase = Phase 0
@@ -1037,9 +1060,9 @@ install args todos = do
     --
     -- TODO do not run simplify if we did not do anything in markInline phase.
     return $
-        (if optionsDumpCore options
+        ({- if optionsDumpCore options
          then _insertDumpCore
-         else id) $
+         else -} id) $
         insertAfterSimplPhase0
             todos
             [ fusionMarkInline 1 ReportSilent False True
