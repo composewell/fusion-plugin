@@ -60,7 +60,15 @@ import Debug.Trace (trace)
 import qualified Data.List as DL
 
 -- Imports for specific compiler versions
-#if MIN_VERSION_ghc(9,2,0)
+#if MIN_VERSION_ghc(9,6,0)
+import GHC.Core.Lint.Interactive (interactiveInScope)
+import GHC.Core.Opt.Simplify.Env (SimplMode(..))
+import GHC.Core.Opt.Simplify (SimplifyOpts(..))
+import GHC.Driver.Config.Core.Opt.Simplify (initSimplMode, initSimplifyOpts)
+#endif
+
+#if MIN_VERSION_ghc(9,6,0)
+#elif MIN_VERSION_ghc(9,2,0)
 import Data.Char (isSpace)
 import Text.Printf (printf)
 import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
@@ -69,7 +77,8 @@ import GHC.Utils.Logger (Logger)
 #endif
 
 -- dump-core option related imports
-#if MIN_VERSION_ghc(9,3,0)
+#if MIN_VERSION_ghc(9,6,0)
+#elif MIN_VERSION_ghc(9,3,0)
 import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
 #elif MIN_VERSION_ghc(9,2,0)
 import GHC.Utils.Logger (putDumpMsg)
@@ -91,7 +100,9 @@ import qualified Data.Set as Set
 #endif
 
 -- Implicit imports
-#if MIN_VERSION_ghc(9,0,0)
+#if MIN_VERSION_ghc(9,6,0)
+import GHC.Plugins
+#elif MIN_VERSION_ghc(9,0,0)
 import GHC.Plugins
 import qualified GHC.Plugins as GhcPlugins
 #else
@@ -263,7 +274,15 @@ parseOptions args = do
 
 unfoldCompulsory :: Arity -> Unfolding -> Unfolding
 unfoldCompulsory arity cuf@CoreUnfolding{} =
-    cuf {uf_src=InlineStable, uf_guidance = UnfWhen arity True True}
+    cuf
+        { uf_src=
+#if MIN_VERSION_ghc(9,6,0)
+            StableSystemSrc
+#else
+            InlineStable
+#endif
+        , uf_guidance = UnfWhen arity True True
+        }
 unfoldCompulsory _ x = x -- NoUnfolding
 
 -- Sets the inline pragma on a bndr, and forgets the unfolding.
@@ -689,6 +708,15 @@ fusionMarkInline pass opt failIt transform =
 -- Simplification pass after marking inline
 -------------------------------------------------------------------------------
 
+#if MIN_VERSION_ghc(9,6,0)
+fusionSimplify :: RuleBase -> HscEnv -> DynFlags -> CoreToDo
+fusionSimplify hpt_rules hsc_env dflags =
+    let mode = initSimplMode dflags InitialPhase "Fusion Plugin Inlining"
+        extra_vars = interactiveInScope (hsc_IC hsc_env)
+     in CoreDoSimplify
+            (initSimplifyOpts
+                dflags extra_vars (maxSimplIterations dflags) mode hpt_rules)
+#else
 fusionSimplify :: HscEnv -> DynFlags -> CoreToDo
 fusionSimplify _hsc_env dflags =
     let mode =
@@ -717,6 +745,7 @@ fusionSimplify _hsc_env dflags =
         (CoreDoSimplifyOpts (maxSimplIterations dflags) mode)
 #else
         (maxSimplIterations dflags) mode
+#endif
 #endif
 
 -------------------------------------------------------------------------------
@@ -858,8 +887,9 @@ dumpSDoc dflags print_unqual
   where dump_style = mkDumpStyle dflags print_unqual
 #endif
 
+-- XXX Need to fix for GHC-9.6 and above
 -- dump core not supported on 9.0.0, 9.0.0 does not export Logger
-#if __GLASGOW_HASKELL__!=900
+#if __GLASGOW_HASKELL__!=900 && !MIN_VERSION_ghc(9,6,0)
 -- Only for GHC versions >= 9.2.0
 #if MIN_VERSION_ghc(9,2,0)
 dumpPassResult ::
@@ -961,6 +991,7 @@ dumpResult dflags print_unqual counter todo binds rules =
 #endif
 #endif
 
+#if !MIN_VERSION_ghc(9,6,0)
 dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
 dumpCore counter title guts = do
     dflags <- getDynFlags
@@ -994,6 +1025,13 @@ _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
     go counter (todo:rest) =
         todo : dumpCorePass counter (text "After " GhcPlugins.<> ppr todo)
              : go (counter + 1) rest
+#else
+dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
+dumpCore _counter _title guts = return guts
+
+_insertDumpCore :: [CoreToDo] -> [CoreToDo]
+_insertDumpCore = id
+#endif
 
 -------------------------------------------------------------------------------
 -- Install our plugin core pass
@@ -1008,7 +1046,18 @@ insertAfterSimplPhase0 origTodos ourTodos report =
   where
     go False [] = error "Simplifier phase 0/\"main\" not found"
     go True [] = []
-#if MIN_VERSION_ghc(9,5,0)
+#if MIN_VERSION_ghc(9,6,0)
+    go _ (todo@(CoreDoSimplify
+        (SimplifyOpts
+            { so_mode =
+                (SimplMode
+                    { sm_phase = Phase 0
+                    , sm_names = ["main"]
+                    }
+                )
+            }
+        )):todos)
+#elif MIN_VERSION_ghc(9,5,0)
     go _ (todo@(CoreDoSimplify (CoreDoSimplifyOpts _ SimplMode
             { sm_phase = Phase 0
             , sm_names = ["main"]
@@ -1027,6 +1076,26 @@ install args todos = do
     options <- liftIO $ parseOptions args
     dflags <- getDynFlags
     hscEnv <- getHscEnv
+#if MIN_VERSION_ghc(9,6,0)
+    m <- getModule
+    let
+        home_pkg_rules =
+            hptRules
+                hscEnv
+                (moduleUnitId m)
+                (GWIB
+                    { gwib_mod = moduleName m
+                    , gwib_isBoot = NotBoot
+                    }
+                )
+        hpt_rule_base = mkRuleBase home_pkg_rules
+        -- XXX GHC should export getHomeRuleBase
+        -- hpt_rule_base <- getHomeRuleBase
+        simplify = fusionSimplify hpt_rule_base hscEnv dflags
+#else
+    let simplify = fusionSimplify hscEnv dflags
+#endif
+
     -- We run our plugin once the simplifier finishes phase 0,
     -- followed by a gentle simplifier which inlines and case-cases
     -- twice.
@@ -1043,11 +1112,11 @@ install args todos = do
         insertAfterSimplPhase0
             todos
             [ fusionMarkInline 1 ReportSilent False True
-            , fusionSimplify hscEnv dflags
+            , simplify
             , fusionMarkInline 2 ReportSilent False True
-            , fusionSimplify hscEnv dflags
+            , simplify
             , fusionMarkInline 3 ReportSilent False True
-            , fusionSimplify hscEnv dflags
+            , simplify
             -- This lets us know what was left unfused after all the inlining
             -- and case-of-case transformations.
             , let mesg = "Check unfused (post inlining)"
