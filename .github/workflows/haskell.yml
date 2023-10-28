@@ -36,8 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name:
-          - 9.4.4
+        name: [head, 9.8.1, 9.6.3, 9.4.7, 9.2.8, 9.0.2, 8.10.7, 8.10.7+macOS, 8.8.4, 8.6.5]
         cabal_version: ["3.8.1.0"]
         include:
           - name: head
@@ -45,12 +44,20 @@ jobs:
             runner: ubuntu-latest
             build: cabal
             cabal_project: cabal.project.ghc-head
-          - name: 9.4.4
-            ghc_version: 9.4.4
+          - name: 9.8.1
+            ghc_version: 9.8.1
             build: cabal-v2
             runner: ubuntu-latest
-          - name: 9.2.7
-            ghc_version: 9.2.7
+          - name: 9.6.3
+            ghc_version: 9.6.3
+            build: cabal-v2
+            runner: ubuntu-latest
+          - name: 9.4.7
+            ghc_version: 9.4.7
+            build: cabal-v2
+            runner: ubuntu-latest
+          - name: 9.2.8
+            ghc_version: 9.2.8
             build: cabal-v2
             runner: ubuntu-latest
           - name: 9.0.2
