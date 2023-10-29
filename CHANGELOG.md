@@ -1,3 +1,7 @@
+## 0.2.7
+
+* Support ghc-9.6 and ghc-9.8
+
 ## 0.2.6
 
 * Force inline on joins that consume fusible constructors

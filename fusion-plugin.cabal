@@ -1,7 +1,7 @@
 cabal-version:       2.2
 
 name:                fusion-plugin
-version:             0.2.6
+version:             0.2.7
 synopsis:            GHC plugin to make stream fusion more predictable.
 description:
   This plugin provides the programmer with a way to annotate certain
@@ -24,8 +24,10 @@ tested-with:         GHC==8.6.5
                    , GHC==8.8.4
                    , GHC==8.10.7
                    , GHC==9.0.2
-                   , GHC==9.2.7
-                   , GHC==9.4.4
+                   , GHC==9.2.8
+                   , GHC==9.4.7
+                   , GHC==9.6.3
+                   , GHC==9.8.1
 author:              Pranay Sashank
 maintainer:          streamly@composewell.com
 copyright:           (c) 2019 Composewell Technologies
@@ -46,7 +48,7 @@ source-repository head
 library
   exposed-modules:     Fusion.Plugin
   build-depends:       base         >= 4.0     && <  5.0
-                     , containers   >= 0.5.6.2 && <  0.7
+                     , containers   >= 0.5.6.2 && <  0.8
                      , directory    >= 1.2.2.0 && <  1.4
                      , filepath     >= 1.4     && <  1.5
                      , ghc          >= 7.10.3  && <  9.9
