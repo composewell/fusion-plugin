@@ -21,9 +21,9 @@ jobs:
       CABAL_NO_SANDBOX: y
       CABAL_HACKAGE_MIRROR: hackage.haskell.org:http://hackage.fpcomplete.com
 
-      PACKCHECK_LOCAL_PATH: "./packcheck.sh"
+      PACKCHECK: "./packcheck.sh"
       PACKCHECK_GITHUB_URL: "https://raw.githubusercontent.com/composewell/packcheck"
-      PACKCHECK_GITHUB_COMMIT: "v0.6.0"
+      PACKCHECK_GITHUB_COMMIT: "ccc55fd4b895e842ca6e2d8ac63aa4acc1c3209a"
 
       BUILD: ${{ matrix.build }}
       GHCVER: ${{ matrix.ghc_version }}
@@ -31,19 +31,26 @@ jobs:
       CABAL_PROJECT: ${{ matrix.cabal_project }}
       CABAL_BUILD_OPTIONS: ${{ matrix.cabal_build_options }}
       DISABLE_SDIST_BUILD: ${{ matrix.disable_sdist_build }}
+      GHCUP_GHC_OPTIONS: ${{ matrix.ghcup_ghc_options }}
+      GHCUP_VERSION: 0.1.20.0
 
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        name: [head, 9.8.1, 9.6.3, 9.4.7, 9.2.8, 9.0.2, 8.10.7, 8.10.7+macOS, 8.8.4, 8.6.5]
+        name: [head, 9.10.1, 9.8.1, 9.6.3, 9.4.7, 9.2.8+macOS, 9.0.2, 8.10.7, 8.8.4, 8.6.5]
         cabal_version: ["3.8.1.0"]
         include:
           - name: head
             ghc_version: head
+            build: cabal-v2
             runner: ubuntu-latest
-            build: cabal
             cabal_project: cabal.project.ghc-head
+            ghcup_ghc_options: "-u https://gitlab.haskell.org/ghc/ghc/-/jobs/artifacts/master/raw/ghc-x86_64-linux-deb10-int_native-validate.tar.xz?job=x86_64-linux-deb10-int_native-validate"
+          - name: 9.10.1
+            ghc_version: 9.10.1
+            build: cabal-v2
+            runner: ubuntu-latest
           - name: 9.8.1
             ghc_version: 9.8.1
             build: cabal-v2
@@ -56,23 +63,21 @@ jobs:
             ghc_version: 9.4.7
             build: cabal-v2
             runner: ubuntu-latest
-          - name: 9.2.8
+          - name: 9.2.8+macOS
             ghc_version: 9.2.8
             build: cabal-v2
-            runner: ubuntu-latest
+            runner: macos-latest
+            disable_sdist_build: "y"
           - name: 9.0.2
             ghc_version: 9.0.2
             build: cabal-v2
             runner: ubuntu-latest
+          # macos build on ghc 8.10.7 fails with some LLVM version issues.
+          # See: https://github.com/haskell/vscode-haskell/issues/667
           - name: 8.10.7
             ghc_version: 8.10.7
             build: cabal-v2
             runner: ubuntu-latest
-          - name: 8.10.7+macOS
-            ghc_version: 8.10.7
-            build: cabal-v2
-            disable_sdist_build: "y"
-            runner: macos-latest
           - name: 8.8.4
             ghc_version: 8.8.4
             build: cabal-v2
@@ -93,42 +98,20 @@ jobs:
 
     - name: Download packcheck
       run: |
-        # If a custom stack-yaml is specified, replace the default with that
-        if test -e "$STACK_YAML"; then rm -f stack.yaml && ln -sv $STACK_YAML stack.yaml; else true; fi
-        unset STACK_YAML
-
-        # Get packcheck if needed
-        CURL=$(which curl)
-        PACKCHECK_URL=${PACKCHECK_GITHUB_URL}/${PACKCHECK_GITHUB_COMMIT}/packcheck.sh
-        if test ! -e "$PACKCHECK_LOCAL_PATH"; then $CURL -sL -o "$PACKCHECK_LOCAL_PATH" $PACKCHECK_URL; fi;
-        chmod +x $PACKCHECK_LOCAL_PATH
-
-        os=$(uname -s -m)
-        case "$os" in
-          "Linux x86_64") GHCUP_ARCH="x86_64-linux" ;;
-          "Darwin x86_64") GHCUP_ARCH="x86_64-apple-darwin" ;;
-          *) echo "Unknown OS/Arch: $os"; exit 1;;
-        esac
-
-        # Check available versions here: https://downloads.haskell.org/~ghcup/
-        GHCUP_VER=0.1.18.0
-        $CURL -sL -o ./ghcup https://downloads.haskell.org/~ghcup/$GHCUP_VER/${GHCUP_ARCH}-ghcup-$GHCUP_VER
-        chmod +x ./ghcup
-        if test "$GHCVER" = "head"
+        if test ! -e "$PACKCHECK"
         then
-          # The URL may change, to find a working URL go to https://gitlab.haskell.org/ghc/ghc/-/jobs/
-          # Find a debian10 job, click on a passed/failed job, at the
-          # end of the output you will find the tar.xz name, put that after
-          # "raw/", and put the job name after "job=".
-          # Also see https://github.com/mpickering/ghc-artefact-nix/blob/master/gitlab-artifact.nix
-          ./ghcup install ghc -u https://gitlab.haskell.org/ghc/ghc/-/jobs/artifacts/master/raw/ghc-x86_64-linux-deb10-int_native-validate.tar.xz?job=x86_64-linux-deb10-int_native-validate head
-        else
-          ./ghcup install ghc $GHCVER
+          if test -z "$PACKCHECK_GITHUB_COMMIT"
+          then
+              die "PACKCHECK_GITHUB_COMMIT is not specified."
+          fi
+          PACKCHECK_URL=${PACKCHECK_GITHUB_URL}/${PACKCHECK_GITHUB_COMMIT}/packcheck.sh
+          curl --fail -sL -o "$PACKCHECK" $PACKCHECK_URL || exit 1
+          chmod +x $PACKCHECK
+        elif test ! -x "$PACKCHECK"
+        then
+            chmod +x $PACKCHECK
         fi
-        ./ghcup install cabal $CABALVER
-        ./ghcup set ghc $GHCVER
-        ./ghcup set cabal $CABALVER
 
     - name: Run packcheck
       run: |
-        bash -c "$PACKCHECK_LOCAL_PATH $BUILD"
+        bash -c "$PACKCHECK $BUILD"
