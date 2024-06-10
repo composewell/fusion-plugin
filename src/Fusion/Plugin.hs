@@ -32,6 +32,7 @@
 -- (e.g. 10x) to the code.
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+{-# OPTIONS_GHC -Wno-x-partial #-}
 {-# LANGUAGE CPP #-}
 
 module Fusion.Plugin
