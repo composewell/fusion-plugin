@@ -28,6 +28,8 @@ tested-with:         GHC==8.6.5
                    , GHC==9.4.7
                    , GHC==9.6.3
                    , GHC==9.8.1
+                   , GHC==9.10.1
+                   , GHC==9.12.1
 author:              Pranay Sashank
 maintainer:          streamly@composewell.com
 copyright:           (c) 2019 Composewell Technologies
@@ -51,9 +53,9 @@ library
                      , containers   >= 0.5.6.2 && <  0.8
                      , directory    >= 1.2.2.0 && <  1.4
                      , filepath     >= 1.4     && <  1.6
-                     , ghc          >= 7.10.3  && <  9.11
+                     , ghc          >= 7.10.3  && <  9.13
                      , syb          >= 0.7     && <  0.8
-                     , time         >= 1.5     && <  1.14
+                     , time         >= 1.5     && <  1.15
                      , transformers >= 0.4     && < 0.7
 
                      , fusion-plugin-types >= 0.1 && < 0.2

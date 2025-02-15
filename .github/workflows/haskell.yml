@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [head, 9.10.1, 9.8.1, 9.6.3, 9.4.7, 9.2.8+macOS, 9.0.2, 8.10.7, 8.8.4, 8.6.5]
+        name: [head, 9.12.1, 9.10.1, 9.8.1, 9.6.3, 9.4.7, 9.2.8+macOS, 9.0.2, 8.10.7, 8.8.4, 8.6.5]
         cabal_version: ["3.8.1.0"]
         include:
           - name: head
@@ -47,6 +47,10 @@ jobs:
             runner: ubuntu-latest
             cabal_project: cabal.project.ghc-head
             ghcup_ghc_options: "-u https://gitlab.haskell.org/ghc/ghc/-/jobs/artifacts/master/raw/ghc-x86_64-linux-deb10-int_native-validate.tar.xz?job=x86_64-linux-deb10-int_native-validate"
+          - name: 9.12.1
+            ghc_version: 9.12.1
+            build: cabal-v2
+            runner: ubuntu-latest
           - name: 9.10.1
             ghc_version: 9.10.1
             build: cabal-v2
