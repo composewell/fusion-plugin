@@ -23,7 +23,7 @@ jobs:
 
       PACKCHECK: "./packcheck.sh"
       PACKCHECK_GITHUB_URL: "https://raw.githubusercontent.com/composewell/packcheck"
-      PACKCHECK_GITHUB_COMMIT: "ccc55fd4b895e842ca6e2d8ac63aa4acc1c3209a"
+      PACKCHECK_GITHUB_COMMIT: "7c4e1ab7a59b5ed6e92cfd0da67460a6116be4ac"
 
       BUILD: ${{ matrix.build }}
       GHCVER: ${{ matrix.ghc_version }}
@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: [head, 9.12.1, 9.10.1, 9.8.1, 9.6.3, 9.4.7, 9.2.8+macOS, 9.0.2, 8.10.7, 8.8.4, 8.6.5]
+        name: [head, 9.12.1, 9.10.1, 9.8.1, 9.6.3, 9.4.7+macos, 9.2.8, 9.0.2, 8.10.7, 8.8.4, 8.6.5]
         cabal_version: ["3.8.1.0"]
         include:
           - name: head
@@ -63,14 +63,14 @@ jobs:
             ghc_version: 9.6.3
             build: cabal-v2
             runner: ubuntu-latest
-          - name: 9.4.7
+          - name: 9.4.7+macos
             ghc_version: 9.4.7
             build: cabal-v2
-            runner: ubuntu-latest
-          - name: 9.2.8+macOS
+            runner: macos-latest
+          - name: 9.2.8
             ghc_version: 9.2.8
             build: cabal-v2
-            runner: macos-latest
+            runner: ubuntu-latest
             disable_sdist_build: "y"
           - name: 9.0.2
             ghc_version: 9.0.2
