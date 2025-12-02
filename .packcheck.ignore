@@ -3,3 +3,5 @@
 .gitignore
 appveyor.yml
 cabal.project.ghc-head
+flake.lock
+flake.nix
