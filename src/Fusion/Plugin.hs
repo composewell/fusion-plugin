@@ -424,10 +424,10 @@ letBndrsThatAreCases dflags anns bind = goLet [] bind
     -- annotated with "Fuse" and traverse the Alt expressions to discover more
     -- let bindings.
     go parents True (Case _ _ _ alts) =
-        let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents False expr1)
+        let result = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents False expr1)
         in case needInlineCaseAlt dflags parents anns alts of
-            Just x -> (parents, x) : binders
-            Nothing -> binders
+            Just x -> (parents, x) : result
+            Nothing -> result
 
     -- Only traverse the Alt expressions of the case to discover new let
     -- bindings. Do not match for annotated constructors in the Alts.
@@ -755,13 +755,18 @@ fusionSimplify _hsc_env dflags =
 
 fusionReport :: String -> ReportMode -> ModGuts -> CoreM ModGuts
 fusionReport mesg reportMode guts = do
-    putMsgS $ "fusion-plugin: " ++ mesg ++ "..."
-    dflags <- getDynFlags
-    anns <- FMAP_SND getAnnotations deserializeWithData guts
-    when (anyUFM (any (== Fuse)) anns) $
-        mapM_ (transformBind dflags anns) $ mg_binds guts
-    return guts
-  where
+    case reportMode of
+        ReportSilent -> return guts
+        _ -> do
+            putMsgS $ "fusion-plugin: " ++ mesg ++ "..."
+            dflags <- getDynFlags
+            anns <- FMAP_SND getAnnotations deserializeWithData guts
+            when (anyUFM (any (== Fuse)) anns) $
+                mapM_ (transformBind dflags anns) $ mg_binds guts
+            return guts
+
+    where
+
     transformBind :: DynFlags -> UNIQ_FM -> CoreBind -> CoreM ()
     transformBind dflags anns bind@(NonRec b _) = do
         let results = containsAnns dflags anns bind
