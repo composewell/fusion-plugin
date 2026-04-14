@@ -68,6 +68,13 @@ import GHC.Core.Opt.Simplify (SimplifyOpts(..))
 import GHC.Driver.Config.Core.Opt.Simplify (initSimplMode, initSimplifyOpts)
 #endif
 
+#if MIN_VERSION_ghc(9,14,0)
+import GHC.Unit.Env (ue_hpt)
+import GHC.Unit.Home.ModInfo (HomeModInfo(..))
+import GHC.Unit.Home.PackageTable (concatHpt)
+import GHC.Unit.Module.ModDetails (ModDetails(..))
+#endif
+
 #if MIN_VERSION_ghc(9,6,0)
 #elif MIN_VERSION_ghc(9,2,0)
 import Data.Char (isSpace)
@@ -1082,7 +1089,12 @@ install args todos = do
     options <- liftIO $ parseOptions args
     dflags <- getDynFlags
     hscEnv <- getHscEnv
-#if MIN_VERSION_ghc(9,6,0)
+#if MIN_VERSION_ghc(9,14,0)
+    let hpt = ue_hpt (hsc_unit_env hscEnv)
+    home_pkg_rules <- liftIO $  concatHpt (md_rules . hm_details) hpt
+    let hpt_rule_base = mkRuleBase home_pkg_rules
+        simplify = fusionSimplify hpt_rule_base hscEnv dflags
+#elif MIN_VERSION_ghc(9,6,0)
     m <- getModule
     let
         home_pkg_rules =
