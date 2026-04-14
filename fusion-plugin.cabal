@@ -34,14 +34,14 @@ author:              Pranay Sashank
 maintainer:          streamly@composewell.com
 copyright:           (c) 2019 Composewell Technologies
 category:            Development
-extra-source-files:  CHANGELOG.md
-                     NOTICE
-                     README.md
-                     design/README.md
-                     design/join-constr-app.hs
-                     design/rec-binder-example.core
-                     design/rec-binder-example.hs
-                     stack.yaml
+extra-doc-files:
+    CHANGELOG.md
+    NOTICE
+    README.md
+    design/README.md
+    design/join-constr-app.hs
+    design/rec-binder-example.core
+    design/rec-binder-example.hs
 
 source-repository head
     type: git
@@ -49,7 +49,7 @@ source-repository head
 
 library
   exposed-modules:     Fusion.Plugin
-  build-depends:       base         >= 4.0     && <  5.0
+  build-depends:       base         >= 4.0     && <  5
                      , containers   >= 0.5.6.2 && <  0.9
                      , directory    >= 1.2.2.0 && <  1.4
                      , filepath     >= 1.4     && <  1.6
