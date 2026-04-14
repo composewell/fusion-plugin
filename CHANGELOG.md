@@ -1,3 +1,8 @@
+## 0.2.8
+
+* Support ghc-9.14, adapt to HPT rule creation API change
+* ghc-9.10 and ghc-9.12 were supported via hackage revisions
+
 ## 0.2.7
 
 * Support ghc-9.6 and ghc-9.8
