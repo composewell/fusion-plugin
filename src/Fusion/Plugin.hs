@@ -760,6 +760,44 @@ fusionSimplify _hsc_env dflags =
 -- Report unfused constructors
 -------------------------------------------------------------------------------
 
+-- | The set of top level binders that are reachable from an exported
+-- binder, and therefore guaranteed to survive into the final program.
+--
+-- This plugin's final check runs as the very last 'CoreToDo', but GHC's
+-- "CoreTidy" runs even after that, it changes the Core and there is no way to
+-- run a hook after that in the plugin. We approximate CoreTidy's reachability
+-- analysis here so we can skip unreachable bindings, seeding it from the same
+-- 'isExportedId' flag CoreTidy itself relies on.
+--
+liveTopLevelBinders :: ModGuts -> VarSet
+liveTopLevelBinders guts = go initial initial
+
+    where
+
+    flattenBind (NonRec b e) = [(b, e)]
+    flattenBind (Rec bs) = bs
+
+    topBinds = mg_binds guts >>= flattenBind
+    topBndrSet = mkVarSet (map fst topBinds)
+
+    adjacency :: VarEnv VarSet
+    adjacency = mkVarEnv
+        [ (b, intersectVarSet topBndrSet (exprFreeVars rhs))
+        | (b, rhs) <- topBinds
+        ]
+
+    initial = mkVarSet (filter isExportedId (map fst topBinds))
+
+    go frontier visited
+        | isEmptyVarSet frontier = visited
+        | otherwise =
+            let next = unionVarSets
+                     $ mapMaybe (lookupVarEnv adjacency)
+                     $ nonDetEltsUniqSet frontier
+                newVisited = unionVarSet visited next
+                newFrontier = next `minusVarSet` visited
+            in go newFrontier newVisited
+
 fusionReport :: String -> ReportMode -> ModGuts -> CoreM ModGuts
 fusionReport mesg reportMode guts = do
     case reportMode of
@@ -768,14 +806,17 @@ fusionReport mesg reportMode guts = do
             putMsgS $ "fusion-plugin: " ++ mesg ++ "..."
             dflags <- getDynFlags
             anns <- FMAP_SND getAnnotations deserializeWithData guts
+            let liveBndrs = liveTopLevelBinders guts
             when (anyUFM (any (== Fuse)) anns) $
-                mapM_ (transformBind dflags anns) $ mg_binds guts
+                mapM_ (transformBind dflags anns liveBndrs) $ mg_binds guts
             return guts
 
     where
 
-    transformBind :: DynFlags -> UNIQ_FM -> CoreBind -> CoreM ()
-    transformBind dflags anns bind@(NonRec b _) = do
+    transformBind :: DynFlags -> UNIQ_FM -> VarSet -> CoreBind -> CoreM ()
+    transformBind _ _ liveBndrs (NonRec b _)
+        | not (b `elemVarSet` liveBndrs) = return ()
+    transformBind dflags anns _ bind@(NonRec b _) = do
         let results = containsAnns dflags anns bind
 
         let getAlts x =
@@ -813,8 +854,10 @@ fusionReport mesg reportMode guts = do
                 showInfo b dflags reportMode False "CONSTRUCT"
                     uniqConstr constrs showDetailsConstr
 
-    transformBind dflags anns (Rec bs) =
-        mapM_ (\(b, expr) -> transformBind dflags anns (NonRec b expr)) bs
+    transformBind dflags anns liveBndrs (Rec bs) =
+        mapM_
+            (\(b, expr) -> transformBind dflags anns liveBndrs (NonRec b expr))
+            bs
 
 -------------------------------------------------------------------------------
 -- Dump core passes
