@@ -61,6 +61,50 @@ in a different file.
 `-fplugin-opt=Fusion.Plugin:verbose=1`: report unfused functions. Verbosity
 levels `2`, `3`, `4` can be used for more verbose output.
 
+### Reporting Programmer Annotated Binders
+
+The `verbose=N` report above covers the whole module. To check a single
+binding instead, annotate it with `Inspect` from `Fusion.Plugin.Types`
+(from the `fusion-plugin-types` package). This works regardless of
+`verbose=N` -- an `Inspect` annotated binding is always reported, even when
+the plugin is otherwise silent:
+
+```haskell
+{-# LANGUAGE TemplateHaskellQuotes #-}
+
+import Fusion.Plugin.Types
+    (checkFusion, forbid, allow, forbidTypes, allowOnlyTypes)
+
+-- checkFusion: Fuse-annotated types are forbidden by default, with an extra
+-- forbid-list and an overriding allow-list.
+
+-- Just enforce the baseline: nothing Fuse-annotated may survive to core.
+{-# ANN function1 (checkFusion mempty) #-}
+function1 :: ...
+
+-- Also forbid Text even though it isn't Fuse-annotated.
+{-# ANN function1a (checkFusion (forbid [''Text])) #-}
+function1a :: ...
+
+-- Forbid Text, but explicitly allow ByteString even if it's Fuse-annotated
+-- or would otherwise be caught.
+{-# ANN function1b (checkFusion (forbid [''Text] <> allow [''ByteString])) #-}
+function1b :: ...
+
+-- forbidTypes: blocklist -- only the named types are disallowed, everything
+-- else in core is fine.
+{-# ANN function2 (forbidTypes [''SomeType]) #-}
+function2 :: ...
+
+-- allowOnlyTypes: allowlist -- only the named types may appear, everything
+-- else in core fails the check.
+{-# ANN function3 (allowOnlyTypes [''Int, ''IO]) #-}
+function3 :: ...
+```
+
+Type references are TH `Name`s (`''SomeType`), so a typo or a stale
+reference to a renamed type is a compile error, not a silently-stale check.
+
 ## See also
 
 If you are a library author looking to annotate the types, you need to

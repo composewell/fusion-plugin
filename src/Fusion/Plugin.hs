@@ -54,11 +54,15 @@ where
 import Control.Monad (mzero, when)
 import Control.Monad.Trans.Maybe (MaybeT(..))
 import Control.Monad.Trans.State (StateT, evalStateT, get, put)
-import Data.Maybe (mapMaybe)
+import Data.Data (Data)
+import Data.Maybe (catMaybes, isJust, mapMaybe)
+import Data.Word (Word8)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
 import Debug.Trace (trace)
 import qualified Data.List as DL
+import qualified Data.Map.Strict as Map
+import qualified Language.Haskell.TH.Syntax as TH
 
 -- Imports for specific compiler versions
 #if MIN_VERSION_ghc(9,6,0)
@@ -117,8 +121,8 @@ import qualified GHC.Plugins as GhcPlugins
 import GhcPlugins
 #endif
 
--- Imports from this package
-import Fusion.Plugin.Types (Fuse(..))
+-- Imports from fusion-plugin-types
+import Fusion.Plugin.Types (Fuse(..), Inspect(..))
 
 -- $using
 --
@@ -214,7 +218,7 @@ data ReportMode =
     | ReportVerbose
     | ReportVerbose1
     | ReportVerbose2
-    deriving (Show)
+    deriving (Eq, Show)
 
 data Options = Options
     { optionsDumpCore :: Bool
@@ -332,6 +336,11 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #define FMAP_SND
 #endif
 
+-- Keyed by 'OccName' string rather than by 'Name'/'Unique'. A top-level Id's
+-- Unique -- and even its 'NameSort' -- is not guaranteed to survive the
+-- Core-to-core passes while OccName stays the same.
+#define INSPECT_FM Map.Map String [Inspect]
+
 hasInlineBinder :: CoreBndr -> Bool
 hasInlineBinder bndr =
     let inl = inlinePragInfo $ idInfo bndr
@@ -347,22 +356,22 @@ hasInlineBinder bndr =
 #define ALT_CONSTR(x,y,z) (x, y, z)
 #endif
 
--- Checks whether a case alternative contains a type with the
--- annotation.  Only checks the first typed element in the list, so
+-- Checks whether a case alternative contains a type for which the given
+-- predicate is true. Only checks the first typed element in the list, so
 -- only pass alternatives from one case expression.
 altsContainsAnn ::
-    DynFlags -> UNIQ_FM -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
+    DynFlags -> (Name -> Bool) -> [Alt CoreBndr] -> Maybe (Alt CoreBndr)
 altsContainsAnn _ _ [] = Nothing
 altsContainsAnn _ _ ((ALT_CONSTR(DEFAULT,_,_)):[]) =
     debug 2 "Case trivial default" Nothing
-altsContainsAnn dflags anns (bndr@(ALT_CONSTR(DataAlt dcon,_,_)):_) =
+altsContainsAnn dflags isInteresting (bndr@(ALT_CONSTR(DataAlt dcon,_,_)):_) =
     let name = GET_NAME $ dataConTyCon dcon
         mesg = "Case DataAlt type " ++ showWithUnique dflags name
-    in case lookupUFM anns name of
-            Nothing -> debug 2 (mesg ++ " not annotated") Nothing
-            Just _ -> debug 2 (mesg ++ " annotated") (Just bndr)
-altsContainsAnn dflags anns ((ALT_CONSTR(DEFAULT,_,_)):alts) =
-    altsContainsAnn dflags anns alts
+    in if isInteresting name
+       then debug 2 (mesg ++ " annotated") (Just bndr)
+       else debug 2 (mesg ++ " not annotated") Nothing
+altsContainsAnn dflags isInteresting ((ALT_CONSTR(DEFAULT,_,_)):alts) =
+    altsContainsAnn dflags isInteresting alts
 altsContainsAnn _ _ ((ALT_CONSTR(LitAlt _,_,_)):_) =
     debug 2 "Case LitAlt" Nothing
 
@@ -382,7 +391,7 @@ needInlineCaseAlt dflags parents anns bndr =
        then
             debug 2
                 (mesg ++ " not inlined")
-                $ case altsContainsAnn dflags anns bndr of
+                $ case altsContainsAnn dflags (isJust . lookupUFM anns) bndr of
                     Just alt -> Just alt
                     _ -> Nothing
        else debug 2 (mesg ++ " already inlined") Nothing
@@ -529,8 +538,9 @@ data Context = CaseAlt (Alt CoreBndr) | Constr Id
 -- anywhere in the binders, not just case match on entry or construction on
 -- return.
 --
-containsAnns :: DynFlags -> UNIQ_FM -> CoreBind -> [([CoreBind], Context)]
-containsAnns dflags anns bind =
+containsAnns
+    :: DynFlags -> (Name -> Bool) -> CoreBind -> [([CoreBind], Context)]
+containsAnns dflags isInteresting bind =
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
     goLet [] bind
@@ -542,7 +552,7 @@ containsAnns dflags anns bind =
     -- let bindings.
     go parents (Case _ _ _ alts) =
         let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
-        in case altsContainsAnn dflags anns alts of
+        in case altsContainsAnn dflags isInteresting alts of
             Just x -> (parents, CaseAlt x) : binders
             Nothing -> binders
 
@@ -558,11 +568,9 @@ containsAnns dflags anns bind =
     -- Check if the Var is of the type of a data constructor of interest
     go parents (Var i) =
         case tyConAppTyConPicky_maybe (varType i) of
-            Just tycon ->
-                case lookupUFM anns (GET_NAME tycon) of
-                    Just _ -> [(parents, Constr i)]
-                    Nothing -> []
-            Nothing -> []
+            Just tycon | isInteresting (GET_NAME tycon) ->
+                [(parents, Constr i)]
+            _ -> []
 
     -- There are no let bindings in these.
     go _ (Lit _) = []
@@ -574,6 +582,55 @@ containsAnns dflags anns bind =
     goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
+
+contextTyConName :: Context -> Maybe Name
+contextTyConName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+    Just (GET_NAME $ dataConTyCon dcon)
+contextTyConName (CaseAlt _) = Nothing
+contextTyConName (Constr con) =
+    GET_NAME <$> tyConAppTyConPicky_maybe (varType con)
+
+-- | Drop any hit whose TyCon 'Name' is in the given exclusion list.
+filterExcluded
+    :: [Name] -> [([CoreBind], Context)] -> [([CoreBind], Context)]
+filterExcluded excl =
+    filter (\(_, ctx) -> maybe True (`notElem` excl) (contextTyConName ctx))
+
+-- | Like GHC 'getAnnotations' but keyed by 'OccName' string instead of by
+-- 'Name' (i.e. by 'Unique'). 'getAnnotations' folds annotations into a
+-- 'NameEnv', and it stores only an 'Int' key internally. We read 'mg_anns'
+-- directly: it is populated once from the module's '{-# ANN #-}' pragmas
+-- (before any Core-to-core pass runs) and it is never rewritten by any
+-- 'CoreToDo', so the 'Name's inside it are exactly as resolved by the renamer,
+-- unaffected by any later binder cloning/renaming.
+getAnnotationsByStableName
+    :: Data a => ([Word8] -> a) -> ModGuts -> Map.Map String [a]
+getAnnotationsByStableName deserialize guts =
+    Map.fromListWith (++) (mapMaybe annPair (mg_anns guts))
+
+    where
+
+    annPair (Annotation (NamedTarget name) payload) =
+        (\v -> (getOccString name, [v])) <$> fromSerialized deserialize payload
+    annPair _ = Nothing
+
+-- | Resolve a list of Template Haskell 'TH.Name's to GHC 'Name's.
+resolveTHNames :: [TH.Name] -> CoreM [Name]
+resolveTHNames = fmap catMaybes . mapM thNameToGhcName
+
+-- | Build the "isInteresting" predicate and the exclusion list for a given
+-- 'Inspect' directive.
+inspectPredicate :: UNIQ_FM -> Inspect -> CoreM (Name -> Bool, [Name])
+inspectPredicate _ (ForbidTypes thNames) = do
+    names <- resolveTHNames thNames
+    return (\n -> n `elem` names, [])
+inspectPredicate anns (CheckFusion thForbid thAllow) = do
+    forbidden <- resolveTHNames thForbid
+    allowed <- resolveTHNames thAllow
+    return (\n -> isJust (lookupUFM anns n) || n `elem` forbidden, allowed)
+inspectPredicate _ (AllowOnlyTypes thAllow) = do
+    allowed <- resolveTHNames thAllow
+    return (const True, allowed)
 
 -------------------------------------------------------------------------------
 -- Core-to-core pass to mark interesting binders to be always inlined
@@ -621,6 +678,16 @@ showDetailsConstr dflags reportMode (binds, con) =
 instance Outputable Fuse where
     ppr _ = text "Fuse"
 
+-- Orphan instance for 'Inspect', used only to print a banner naming the
+-- directive that triggered a focused report; TH 'TH.Name's are shown via
+-- their derived 'Show' instance rather than GHC's 'Outputable' (which has
+-- no instance for 'TH.Name').
+instance Outputable Inspect where
+    ppr (ForbidTypes names) = text "forbidTypes" <+> text (show names)
+    ppr (CheckFusion f a) =
+        text "checkFusion" <+> text (show f) <+> text (show a)
+    ppr (AllowOnlyTypes names) = text "allowOnlyTypes" <+> text (show names)
+
 showInfo
     :: CoreBndr
     -> DynFlags
@@ -650,6 +717,45 @@ showInfo parent dflags reportMode failIt
                         $ DL.nub
                         $ map (showDetails dflags reportMode) annotated
         when failIt $ error "failing"
+
+-- | If the given top level bind's own binder carries one or more 'Inspect'
+-- annotations, print a report of interesting types case-matched or
+-- constructed anywhere in its RHS, per each annotation's rules. No-op if
+-- the binder is not annotated.
+reportInspected :: DynFlags -> UNIQ_FM -> INSPECT_FM -> CoreBind -> CoreM ()
+reportInspected dflags anns inspectAnns bind@(NonRec b _) =
+    case Map.lookup (getOccString (GET_NAME b)) inspectAnns of
+        Nothing -> return ()
+        Just ispecs -> mapM_ go ispecs
+  where
+    go ispec = do
+        putMsgS $ "fusion-plugin: Inspecting "
+                ++ showWithUnique dflags b
+                ++ " (" ++ showSDoc dflags (ppr ispec) ++ ")..."
+        (isInteresting, exclusion) <- inspectPredicate anns ispec
+        let results = filterExcluded exclusion (containsAnns dflags isInteresting bind)
+
+            getAlts x =
+                case x of
+                    (bs, CaseAlt alt) -> Just (bs, alt)
+                    _ -> Nothing
+            patternMatches = mapMaybe getAlts results
+            uniqBinders =
+                DL.nub (map (getNonRecBinder . head . fst) patternMatches)
+
+            getConstrs x =
+                case x of
+                    (bs, Constr con) -> Just (bs, con)
+                    _ -> Nothing
+            constrs = mapMaybe getConstrs results
+            uniqConstr = DL.nub (map (getNonRecBinder . head . fst) constrs)
+
+        showInfo b dflags ReportVerbose False "SCRUTINIZE"
+            uniqBinders patternMatches showDetailsCaseMatch
+        showInfo b dflags ReportVerbose False "CONSTRUCT"
+            uniqConstr constrs showDetailsConstr
+reportInspected _ _ _ (Rec _) =
+    error "reportInspected: expecting only NonRec binders"
 
 markInline :: Int -> ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline pass reportMode failIt transform guts = do
@@ -798,65 +904,76 @@ liveTopLevelBinders guts = go initial initial
                 newFrontier = next `minusVarSet` visited
             in go newFrontier newVisited
 
-fusionReport :: String -> ReportMode -> ModGuts -> CoreM ModGuts
-fusionReport mesg reportMode guts = do
+-- | @runInspect@ controls whether the per-binding 'Inspect' annotations are
+-- also processed.
+fusionReport :: String -> ReportMode -> Bool -> ModGuts -> CoreM ModGuts
+fusionReport mesg reportMode runInspect guts = do
+    let inspectAnns =
+            if runInspect
+            then getAnnotationsByStableName deserializeWithData guts
+            else Map.empty
+        anyInspect = runInspect && not (Map.null inspectAnns)
     case reportMode of
-        ReportSilent -> return guts
+        ReportSilent | not anyInspect -> return guts
         _ -> do
-            putMsgS $ "fusion-plugin: " ++ mesg ++ "..."
+            when (reportMode /= ReportSilent) $
+                putMsgS $ "fusion-plugin: " ++ mesg ++ "..."
             dflags <- getDynFlags
             anns <- FMAP_SND getAnnotations deserializeWithData guts
             let liveBndrs = liveTopLevelBinders guts
-            when (anyUFM (any (== Fuse)) anns) $
-                mapM_ (transformBind dflags anns liveBndrs) $ mg_binds guts
+            when (anyUFM (any (== Fuse)) anns || anyInspect) $
+                mapM_ (transformBind dflags anns inspectAnns liveBndrs)
+                    $ mg_binds guts
             return guts
 
     where
 
-    transformBind :: DynFlags -> UNIQ_FM -> VarSet -> CoreBind -> CoreM ()
-    transformBind _ _ liveBndrs (NonRec b _)
-        | not (b `elemVarSet` liveBndrs) = return ()
-    transformBind dflags anns _ bind@(NonRec b _) = do
-        let results = containsAnns dflags anns bind
+    transformBind
+        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> VarSet -> CoreBind -> CoreM ()
+    transformBind dflags anns inspectAnns liveBndrs bind@(NonRec b _) = do
+        when runInspect $ reportInspected dflags anns inspectAnns bind
+        when (b `elemVarSet` liveBndrs) $ do
+            let results = containsAnns dflags (isJust . lookupUFM anns) bind
 
-        let getAlts x =
-                case x of
-                    (bs, CaseAlt alt) -> Just (bs, alt)
-                    _ -> Nothing
-        let patternMatches = mapMaybe getAlts results
-        let uniqBinders = DL.nub (map (getNonRecBinder . head . fst)
-                                      patternMatches)
+            let getAlts x =
+                    case x of
+                        (bs, CaseAlt alt) -> Just (bs, alt)
+                        _ -> Nothing
+            let patternMatches = mapMaybe getAlts results
+            let uniqBinders = DL.nub (map (getNonRecBinder . head . fst)
+                                          patternMatches)
 
-        -- let constrs = constructingBinders anns bind
-        let getConstrs x =
-                case x of
-                    (bs, Constr con) -> Just (bs, con)
-                    _ -> Nothing
-        let constrs = mapMaybe getConstrs results
-        let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
+            -- let constrs = constructingBinders anns bind
+            let getConstrs x =
+                    case x of
+                        (bs, Constr con) -> Just (bs, con)
+                        _ -> Nothing
+            let constrs = mapMaybe getConstrs results
+            let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
 
-        -- TBD: For ReportWarn level prepare a single consolidated list of
-        -- paths with one entry for each binder and giving one example of what
-        -- it scrutinizes and/or constructs, for example:
-        --
-        -- \$sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
-        --
-        case reportMode of
-            ReportSilent -> return ()
-            ReportWarn -> do
-                let allBinds = map fst patternMatches ++ map fst constrs
-                when (not $ null allBinds) $ do
-                    putMsgS "Unfused bindings:"
-                    putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
-            _ -> do
-                showInfo b dflags reportMode False "SCRUTINIZE"
-                    uniqBinders patternMatches showDetailsCaseMatch
-                showInfo b dflags reportMode False "CONSTRUCT"
-                    uniqConstr constrs showDetailsConstr
+            -- TBD: For ReportWarn level prepare a single consolidated list of
+            -- paths with one entry for each binder and giving one example of
+            -- what it scrutinizes and/or constructs, for example:
+            --
+            -- \$sconcat_s8wu/step5_s8M4: Scrutinizes ConcatOuter, Constructs Yield
+            --
+            case reportMode of
+                ReportSilent -> return ()
+                ReportWarn -> do
+                    let allBinds = map fst patternMatches ++ map fst constrs
+                    when (not $ null allBinds) $ do
+                        putMsgS "Unfused bindings:"
+                        putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
+                _ -> do
+                    showInfo b dflags reportMode False "SCRUTINIZE"
+                        uniqBinders patternMatches showDetailsCaseMatch
+                    showInfo b dflags reportMode False "CONSTRUCT"
+                        uniqConstr constrs showDetailsConstr
 
-    transformBind dflags anns liveBndrs (Rec bs) =
+    transformBind dflags anns inspectAnns liveBndrs (Rec bs) =
         mapM_
-            (\(b, expr) -> transformBind dflags anns liveBndrs (NonRec b expr))
+            (\(b, expr) ->
+                transformBind dflags anns inspectAnns liveBndrs (NonRec b expr))
             bs
 
 -------------------------------------------------------------------------------
@@ -1181,10 +1298,10 @@ install args todos = do
             -- This lets us know what was left unfused after all the inlining
             -- and case-of-case transformations.
             , let mesg = "Check unfused (post inlining)"
-              in CoreDoPluginPass mesg (fusionReport mesg ReportSilent)
+              in CoreDoPluginPass mesg (fusionReport mesg ReportSilent False)
             ]
             (let mesg = "Check unfused (final)"
-                 report = fusionReport mesg (optionsVerbosityLevel options)
+                 report = fusionReport mesg (optionsVerbosityLevel options) True
             in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
