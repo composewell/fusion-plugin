@@ -2,6 +2,9 @@
 
 * Add a `FuseTypes` annotation to mark types as fusible for inlining within a
   single binding only (requires fusion-plugin-types with `FuseTypes`)
+* Add a `NoFuseTypes` annotation to locally override `Fuse` for a
+  binding, disabling the forced inlining due to Fuse for that binding
+  only.
 
 ## 0.2.8
 

@@ -73,6 +73,25 @@ renamed type is a compile error rather than a silently-ignored annotation.
 Using `''Foo` requires `{-# LANGUAGE TemplateHaskellQuotes #-}` (or the heavier
 `TemplateHaskell`) in the annotated module.
 
+### Per-binding override with `NoFuseTypes`
+
+`NoFuseTypes` is the inverse of `Fuse`/`FuseTypes`. Sometimes a type should
+drive fusion in general (via a module-wide `Fuse` annotation) but must *not*
+force inlining inside one particular function. Annotate that *binding* with
+`NoFuseTypes` from `Fusion.Plugin.Types`: the listed types then behave as if
+they carried no `Fuse` annotation, disabling the forced inlining they would
+otherwise drive, but only while inlining inside that one binding. Fusion of
+those types everywhere else in the module is unaffected:
+
+```haskell
+{-# LANGUAGE TemplateHaskellQuotes #-}
+
+import Fusion.Plugin.Types (NoFuseTypes(..))
+
+{-# ANN myFunction (NoFuseTypes [''Step, ''MyMaybe]) #-}
+myFunction :: ...
+```
+
 ### Plugin options
 
 Note: dump-core does not work for GHC-9.0.x, 9.6.x and 9.8.x.

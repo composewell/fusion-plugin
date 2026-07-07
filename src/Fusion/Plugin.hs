@@ -122,7 +122,7 @@ import GhcPlugins
 #endif
 
 -- Imports from fusion-plugin-types
-import Fusion.Plugin.Types (Fuse(..), FuseTypes(..), Inspect(..))
+import Fusion.Plugin.Types (Fuse(..), FuseTypes(..), NoFuseTypes(..), Inspect(..))
 
 -- $using
 --
@@ -351,6 +351,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 -- Core-to-core passes while OccName stays the same.
 #define INSPECT_FM Map.Map String [Inspect]
 #define FUSE_TYPES_FM Map.Map String [FuseTypes]
+#define NO_FUSE_TYPES_FM Map.Map String [NoFuseTypes]
 
 hasInlineBinder :: CoreBndr -> Bool
 hasInlineBinder bndr =
@@ -674,6 +675,14 @@ augmentFuseTypes anns fuseTypesAnns b =
             names <- resolveTHNames (concatMap (\(FuseTypes ns) -> ns) fts)
             return $ plusUFM anns (listToUFM (map (\n -> (n, [Fuse])) names))
 
+removeFuseTypes :: UNIQ_FM -> NO_FUSE_TYPES_FM -> CoreBndr -> CoreM (UNIQ_FM)
+removeFuseTypes anns noFuseTypesAnns b =
+    case Map.lookup (getOccString (GET_NAME b)) noFuseTypesAnns of
+        Nothing -> return anns
+        Just fts -> do
+            names <- resolveTHNames (concatMap (\(NoFuseTypes ns) -> ns) fts)
+            return $ delListFromUFM anns names
+
 -- | Build the "isInteresting" predicate and the exclusion list for a given
 -- 'Inspect' directive.
 inspectPredicate :: UNIQ_FM -> Inspect -> CoreM (Name -> Bool, [Name])
@@ -820,20 +829,27 @@ markInline pass reportMode failIt transform guts = do
     dflags <- getDynFlags
     anns <- FMAP_SND getAnnotations deserializeWithData guts
     let fuseTypesAnns = getAnnotationsByStableName deserializeWithData guts
+    let noFuseTypesAnns = getAnnotationsByStableName deserializeWithData guts
     if (anyUFM (any (== Fuse)) anns || not (Map.null fuseTypesAnns))
     then do
         r <- bindsOnlyPass
-                (mapM (transformBind dflags anns fuseTypesAnns)) guts
+                (mapM
+                    (transformBind dflags anns fuseTypesAnns noFuseTypesAnns))
+                guts
         if dbgLevel > 0
         then dumpCore 0 (text ("Fusion-plugin-" ++ show pass)) r
         else return r
     else return guts
   where
     -- transformBind :: DynFlags -> UniqFM Unique [Fuse] -> CoreBind -> CoreM CoreBind
-    transformBind dflags anns0 fuseTypesAnns bind@(NonRec b _) = do
+    transformBind dflags anns0 fuseTypesAnns noFuseTypesAnns bind@(NonRec b _) = do
         -- Types named in a 'FuseTypes' annotation on this binding act as if
         -- they were 'Fuse'-annotated, but only while inlining inside it.
-        anns <- augmentFuseTypes anns0 fuseTypesAnns b
+        -- Types named in a 'NoFuseTypes' annotation are stripped of their
+        -- 'Fuse' status locally, overriding the above and any module-wide
+        -- 'Fuse' annotation for this binding only.
+        anns1 <- augmentFuseTypes anns0 fuseTypesAnns b
+        anns <- removeFuseTypes anns1 noFuseTypesAnns b
         let patternMatches = letBndrsThatAreCases dflags anns bind
         let uniqPat = DL.nub (map (getNonRecBinder. head . fst) patternMatches)
 
@@ -866,11 +882,12 @@ markInline pass reportMode failIt transform guts = do
                 else bind
         return bind'
 
-    transformBind dflags anns fuseTypesAnns (Rec bs) = do
+    transformBind dflags anns fuseTypesAnns noFuseTypesAnns (Rec bs) = do
         fmap Rec (mapM transformAsNonRec bs)
       where
         transformAsNonRec (b, expr) = do
-            r <- transformBind dflags anns fuseTypesAnns (NonRec b expr)
+            r <- transformBind dflags anns fuseTypesAnns noFuseTypesAnns
+                    (NonRec b expr)
             case r of
                 NonRec b1 expr1 -> return (b1, expr1)
                 _ -> error "Bug: expecting NonRec binder"
