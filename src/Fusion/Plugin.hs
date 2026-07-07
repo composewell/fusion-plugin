@@ -653,14 +653,14 @@ resolveTHNames = fmap catMaybes . mapM thNameToGhcName
 -- | Build the "isInteresting" predicate and the exclusion list for a given
 -- 'Inspect' directive.
 inspectPredicate :: UNIQ_FM -> Inspect -> CoreM (Name -> Bool, [Name])
-inspectPredicate _ (ForbidTypes thNames) = do
+inspectPredicate _ (AllowAllExcept thNames) = do
     names <- resolveTHNames thNames
     return (\n -> n `elem` names, [])
-inspectPredicate anns (CheckFusion thForbid thAllow) = do
+inspectPredicate anns (FusionForbidAllow thForbid thAllow) = do
     forbidden <- resolveTHNames thForbid
     allowed <- resolveTHNames thAllow
     return (\n -> isJust (lookupUFM anns n) || n `elem` forbidden, allowed)
-inspectPredicate _ (AllowOnlyTypes thAllow) = do
+inspectPredicate _ (ForbidAllExcept thAllow) = do
     allowed <- resolveTHNames thAllow
     return (const True, allowed)
 
@@ -715,10 +715,10 @@ instance Outputable Fuse where
 -- their derived 'Show' instance rather than GHC's 'Outputable' (which has
 -- no instance for 'TH.Name').
 instance Outputable Inspect where
-    ppr (ForbidTypes names) = text "forbidTypes" <+> text (show names)
-    ppr (CheckFusion f a) =
-        text "checkFusion" <+> text (show f) <+> text (show a)
-    ppr (AllowOnlyTypes names) = text "allowOnlyTypes" <+> text (show names)
+    ppr (AllowAllExcept names) = text "AllowAllExcept" <+> text (show names)
+    ppr (FusionForbidAllow f a) =
+        text "FusionForbidAllow" <+> text (show f) <+> text (show a)
+    ppr (ForbidAllExcept names) = text "ForbidAllExcept" <+> text (show names)
 
 showInfo
     :: CoreBndr

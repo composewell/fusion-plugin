@@ -72,33 +72,32 @@ the plugin is otherwise silent:
 ```haskell
 {-# LANGUAGE TemplateHaskellQuotes #-}
 
-import Fusion.Plugin.Types
-    (checkFusion, forbid, allow, forbidTypes, allowOnlyTypes)
+import Fusion.Plugin.Types (Inspect(..))
 
--- checkFusion: Fuse-annotated types are forbidden by default, with an extra
--- forbid-list and an overriding allow-list.
+-- FusionForbidAllow: Fuse-annotated types are forbidden by default, with an
+-- extra forbid-list and an overriding allow-list.
 
 -- Just enforce the baseline: nothing Fuse-annotated may survive to core.
-{-# ANN function1 (checkFusion mempty) #-}
+{-# ANN function1 (FusionForbidAllow [] []) #-}
 function1 :: ...
 
 -- Also forbid Text even though it isn't Fuse-annotated.
-{-# ANN function1a (checkFusion (forbid [''Text])) #-}
+{-# ANN function1a (FusionForbidAllow [''Text] []) #-}
 function1a :: ...
 
 -- Forbid Text, but explicitly allow ByteString even if it's Fuse-annotated
 -- or would otherwise be caught.
-{-# ANN function1b (checkFusion (forbid [''Text] <> allow [''ByteString])) #-}
+{-# ANN function1b (FusionForbidAllow [''Text] [''ByteString]) #-}
 function1b :: ...
 
--- forbidTypes: blocklist -- only the named types are disallowed, everything
+-- AllowAllExcept: blocklist -- only the named types are disallowed, everything
 -- else in core is fine.
-{-# ANN function2 (forbidTypes [''SomeType]) #-}
+{-# ANN function2 (AllowAllExcept [''SomeType]) #-}
 function2 :: ...
 
--- allowOnlyTypes: allowlist -- only the named types may appear, everything
+-- ForbidAllExcept: allowlist -- only the named types may appear, everything
 -- else in core fails the check.
-{-# ANN function3 (allowOnlyTypes [''Int, ''IO]) #-}
+{-# ANN function3 (ForbidAllExcept [''Int, ''IO]) #-}
 function3 :: ...
 ```
 
