@@ -122,7 +122,7 @@ import GhcPlugins
 #endif
 
 -- Imports from fusion-plugin-types
-import Fusion.Plugin.Types (Fuse(..), Inspect(..))
+import Fusion.Plugin.Types (Fuse(..), FuseTypes(..), Inspect(..))
 
 -- $using
 --
@@ -146,6 +146,16 @@ import Fusion.Plugin.Types (Fuse(..), Inspect(..))
 -- ghc-options: -O2 -fplugin=Fusion.Plugin -fplugin-opt=Fusion.Plugin:dump-core
 -- @
 -- Output from each transformation is then printed in a different file.
+--
+-- 'Fuse' marks a type as fusible everywhere it is used. To make a type act as
+-- fusible only while inlining inside one specific binding (and nowhere else),
+-- annotate that binding with 'Fusion.Plugin.Types.FuseTypes' instead:
+--
+-- @
+-- {-\# LANGUAGE TemplateHaskellQuotes #-}
+--
+-- {-\# ANN myFunction (FuseTypes [''Step]) #-}
+-- @
 
 -- $impl
 --
@@ -340,6 +350,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 -- Unique -- and even its 'NameSort' -- is not guaranteed to survive the
 -- Core-to-core passes while OccName stays the same.
 #define INSPECT_FM Map.Map String [Inspect]
+#define FUSE_TYPES_FM Map.Map String [FuseTypes]
 
 hasInlineBinder :: CoreBndr -> Bool
 hasInlineBinder bndr =
@@ -650,6 +661,19 @@ getAnnotationsByStableName deserialize guts =
 resolveTHNames :: [TH.Name] -> CoreM [Name]
 resolveTHNames = fmap catMaybes . mapM thNameToGhcName
 
+-- | If the given top level binder carries one or more 'FuseTypes'
+-- annotations, return the module-wide 'Fuse' annotation map augmented with an
+-- entry for each of the named types, so that they are treated exactly like
+-- 'Fuse'-annotated types while inlining inside this binding -- and nowhere
+-- else. Returns the map unchanged if the binder is not annotated.
+augmentFuseTypes :: UNIQ_FM -> FUSE_TYPES_FM -> CoreBndr -> CoreM (UNIQ_FM)
+augmentFuseTypes anns fuseTypesAnns b =
+    case Map.lookup (getOccString (GET_NAME b)) fuseTypesAnns of
+        Nothing -> return anns
+        Just fts -> do
+            names <- resolveTHNames (concatMap (\(FuseTypes ns) -> ns) fts)
+            return $ plusUFM anns (listToUFM (map (\n -> (n, [Fuse])) names))
+
 -- | Build the "isInteresting" predicate and the exclusion list for a given
 -- 'Inspect' directive.
 inspectPredicate :: UNIQ_FM -> Inspect -> CoreM (Name -> Bool, [Name])
@@ -795,16 +819,21 @@ markInline pass reportMode failIt transform guts = do
     putMsgS $ "fusion-plugin: Checking bindings to inline..."
     dflags <- getDynFlags
     anns <- FMAP_SND getAnnotations deserializeWithData guts
-    if (anyUFM (any (== Fuse)) anns)
+    let fuseTypesAnns = getAnnotationsByStableName deserializeWithData guts
+    if (anyUFM (any (== Fuse)) anns || not (Map.null fuseTypesAnns))
     then do
-        r <- bindsOnlyPass (mapM (transformBind dflags anns)) guts
+        r <- bindsOnlyPass
+                (mapM (transformBind dflags anns fuseTypesAnns)) guts
         if dbgLevel > 0
         then dumpCore 0 (text ("Fusion-plugin-" ++ show pass)) r
         else return r
     else return guts
   where
     -- transformBind :: DynFlags -> UniqFM Unique [Fuse] -> CoreBind -> CoreM CoreBind
-    transformBind dflags anns bind@(NonRec b _) = do
+    transformBind dflags anns0 fuseTypesAnns bind@(NonRec b _) = do
+        -- Types named in a 'FuseTypes' annotation on this binding act as if
+        -- they were 'Fuse'-annotated, but only while inlining inside it.
+        anns <- augmentFuseTypes anns0 fuseTypesAnns b
         let patternMatches = letBndrsThatAreCases dflags anns bind
         let uniqPat = DL.nub (map (getNonRecBinder. head . fst) patternMatches)
 
@@ -837,11 +866,11 @@ markInline pass reportMode failIt transform guts = do
                 else bind
         return bind'
 
-    transformBind dflags anns (Rec bs) = do
+    transformBind dflags anns fuseTypesAnns (Rec bs) = do
         fmap Rec (mapM transformAsNonRec bs)
       where
         transformAsNonRec (b, expr) = do
-            r <- transformBind dflags anns (NonRec b expr)
+            r <- transformBind dflags anns fuseTypesAnns (NonRec b expr)
             case r of
                 NonRec b1 expr1 -> return (b1, expr1)
                 _ -> error "Bug: expecting NonRec binder"

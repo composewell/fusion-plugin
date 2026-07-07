@@ -1,3 +1,8 @@
+## Unreleased
+
+* Add a `FuseTypes` annotation to mark types as fusible for inlining within a
+  single binding only (requires fusion-plugin-types with `FuseTypes`)
+
 ## 0.2.8
 
 * Support ghc-9.14, adapt to HPT rule creation API change

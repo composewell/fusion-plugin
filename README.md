@@ -50,6 +50,29 @@ To use this plugin, add this package to your `build-depends`
 and pass the following to your ghc-options:
 `ghc-options: -O2 -fplugin=Fusion.Plugin`
 
+### Per-binding fusion with `FuseTypes`
+
+`Fuse` marks a type as fusible everywhere it is used. Sometimes a type should
+drive fusion only inside one particular function and must not force inlining
+wherever else it happens to be used. For that, annotate the *binding* (not the
+type) with `FuseTypes` from `Fusion.Plugin.Types`. The listed types then behave
+exactly as if they carried a `Fuse` annotation, but only while inlining inside
+that one binding:
+
+```haskell
+{-# LANGUAGE TemplateHaskellQuotes #-}
+
+import Fusion.Plugin.Types (FuseTypes(..))
+
+{-# ANN myFunction (FuseTypes [''Step, ''MyMaybe]) #-}
+myFunction :: ...
+```
+
+Type references are TH `Name`s (`''Step`), so a typo or a stale reference to a
+renamed type is a compile error rather than a silently-ignored annotation.
+Using `''Foo` requires `{-# LANGUAGE TemplateHaskellQuotes #-}` (or the heavier
+`TemplateHaskell`) in the annotated module.
+
 ### Plugin options
 
 Note: dump-core does not work for GHC-9.0.x, 9.6.x and 9.8.x.
