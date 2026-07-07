@@ -596,6 +596,38 @@ filterExcluded
 filterExcluded excl =
     filter (\(_, ctx) -> maybe True (`notElem` excl) (contextTyConName ctx))
 
+-- | True for TyCons whose values GHC never heap-allocates: unboxed
+-- primitives (e.g. 'Int#', 'State#'), unboxed tuples/sums, and true
+-- enumeration types (every data constructor nullary, e.g. '()', 'Bool')
+-- which are compiled as statically shared singletons.
+isNonAllocatingTyCon :: TyCon -> Bool
+isNonAllocatingTyCon tycon =
+    isPrimTyCon tycon
+    || isUnboxedTupleTyCon tycon
+    || isUnboxedSumTyCon tycon
+    || isEnumerationTyCon tycon
+
+-- | False for hits that can never represent leftover boxing: a case match
+-- or construction of a non-allocating type (see 'isNonAllocatingTyCon'), or
+-- a bare reference to something of function type (e.g. a primop like
+-- \"+#\", or a specialized worker) which is not a data construction at
+-- all. Applied unconditionally, regardless of which types the active
+-- 'Inspect' predicate flags as \"interesting\" -- these are never useful
+-- signal for a boxing/fusion report.
+isAllocating :: Context -> Bool
+isAllocating (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+    not (isNonAllocatingTyCon (dataConTyCon dcon))
+isAllocating (CaseAlt _) = True
+isAllocating (Constr con) =
+    not (isFunTy (varType con))
+    && maybe True (not . isNonAllocatingTyCon)
+             (tyConAppTyConPicky_maybe (varType con))
+
+-- | Drop hits that can never represent leftover boxing (see 'isAllocating').
+filterNonAllocating
+    :: [([CoreBind], Context)] -> [([CoreBind], Context)]
+filterNonAllocating = filter (isAllocating . snd)
+
 -- | Like GHC 'getAnnotations' but keyed by 'OccName' string instead of by
 -- 'Name' (i.e. by 'Unique'). 'getAnnotations' folds annotations into a
 -- 'NameEnv', and it stores only an 'Int' key internally. We read 'mg_anns'
@@ -733,7 +765,8 @@ reportInspected dflags anns inspectAnns bind@(NonRec b _) =
                 ++ showWithUnique dflags b
                 ++ " (" ++ showSDoc dflags (ppr ispec) ++ ")..."
         (isInteresting, exclusion) <- inspectPredicate anns ispec
-        let results = filterExcluded exclusion (containsAnns dflags isInteresting bind)
+        let results = filterNonAllocating
+                    $ filterExcluded exclusion (containsAnns dflags isInteresting bind)
 
             getAlts x =
                 case x of
@@ -933,7 +966,8 @@ fusionReport mesg reportMode runInspect guts = do
     transformBind dflags anns inspectAnns liveBndrs bind@(NonRec b _) = do
         when runInspect $ reportInspected dflags anns inspectAnns bind
         when (b `elemVarSet` liveBndrs) $ do
-            let results = containsAnns dflags (isJust . lookupUFM anns) bind
+            let results = filterNonAllocating
+                        $ containsAnns dflags (isJust . lookupUFM anns) bind
 
             let getAlts x =
                     case x of
