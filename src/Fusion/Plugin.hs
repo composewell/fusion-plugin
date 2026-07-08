@@ -739,9 +739,21 @@ showDetailsCaseMatch dflags reportMode (binds, c@(ALT_CONSTR(con,_,_))) =
         tstr =
             case con of
                 DataAlt dcon ->
-                    " :: " ++ showSDoc dflags (ppr (dataConTyCon dcon))
+                    " :: " ++ qualifiedTyConName (dataConTyCon dcon)
                 _ -> ""
     in listPath dflags binds ++ ": " ++ vstr ++ tstr
+
+-- | Show a 'TyCon' fully qualified as @Module.Name@ so that types with the
+-- same unqualified name defined in different modules (e.g. several @Step@
+-- types) can be told apart in a report. Wired-in types with no defining
+-- module are shown by their bare name.
+qualifiedTyConName :: TyCon -> String
+qualifiedTyConName tc =
+    let name = getName tc
+    in case nameModule_maybe name of
+        Just m ->
+            moduleNameString (moduleName m) ++ "." ++ getOccString name
+        Nothing -> getOccString name
 
 showDetailsConstr
     :: DynFlags
@@ -759,7 +771,7 @@ showDetailsConstr dflags reportMode (binds, con) =
         tstr =
             case t of
                 Nothing -> " :: Not a Type Constructor"
-                Just x -> " :: " ++ showSDoc dflags (ppr x)
+                Just x -> " :: " ++ qualifiedTyConName x
     in listPath dflags binds ++ ": " ++ vstr ++ tstr
 
 -- Orphan instance for 'Fuse'
