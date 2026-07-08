@@ -121,8 +121,16 @@ import qualified GHC.Plugins as GhcPlugins
 import GhcPlugins
 #endif
 
+-- Core size reporting
+#if MIN_VERSION_ghc(9,0,0)
+import GHC.Core.Stats (exprStats)
+#else
+import CoreStats (exprStats)
+#endif
+
 -- Imports from fusion-plugin-types
-import Fusion.Plugin.Types (Fuse(..), FuseTypes(..), NoFuseTypes(..), Inspect(..))
+import Fusion.Plugin.Types
+    (Fuse(..), FuseTypes(..), NoFuseTypes(..), Inspect(..), ShowCoreSize(..))
 
 -- $using
 --
@@ -352,6 +360,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #define INSPECT_FM Map.Map String [Inspect]
 #define FUSE_TYPES_FM Map.Map String [FuseTypes]
 #define NO_FUSE_TYPES_FM Map.Map String [NoFuseTypes]
+#define SHOW_CORE_SIZE_FM Map.Map String [ShowCoreSize]
 
 hasInlineBinder :: CoreBndr -> Bool
 hasInlineBinder bndr =
@@ -823,6 +832,18 @@ reportInspected dflags anns inspectAnns bind@(NonRec b _) =
 reportInspected _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
 
+reportCoreSize :: DynFlags -> SHOW_CORE_SIZE_FM -> CoreBind -> CoreM ()
+reportCoreSize dflags sizeAnns (NonRec b rhs) =
+    case Map.lookup (getOccString (GET_NAME b)) sizeAnns of
+        Nothing -> return ()
+        Just _ ->
+            putMsgS $ "fusion-plugin: Core size of "
+                    ++ showWithUnique dflags b
+                    ++ ": "
+                    ++ showSDoc dflags (ppr (exprStats rhs))
+reportCoreSize _ _ (Rec _) =
+    error "reportCoreSize: expecting only NonRec binders"
+
 markInline :: Int -> ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline pass reportMode failIt transform guts = do
     putMsgS $ "fusion-plugin: Checking bindings to inline..."
@@ -991,26 +1012,34 @@ fusionReport mesg reportMode runInspect guts = do
             if runInspect
             then getAnnotationsByStableName deserializeWithData guts
             else Map.empty
+        sizeAnns =
+            if runInspect
+            then getAnnotationsByStableName deserializeWithData guts
+            else Map.empty
         anyInspect = runInspect && not (Map.null inspectAnns)
+        anyShowCoreSize = runInspect && not (Map.null sizeAnns)
+        anyReport = anyInspect || anyShowCoreSize
     case reportMode of
-        ReportSilent | not anyInspect -> return guts
+        ReportSilent | not anyReport -> return guts
         _ -> do
             when (reportMode /= ReportSilent) $
                 putMsgS $ "fusion-plugin: " ++ mesg ++ "..."
             dflags <- getDynFlags
             anns <- FMAP_SND getAnnotations deserializeWithData guts
             let liveBndrs = liveTopLevelBinders guts
-            when (anyUFM (any (== Fuse)) anns || anyInspect) $
-                mapM_ (transformBind dflags anns inspectAnns liveBndrs)
+            when (anyUFM (any (== Fuse)) anns || anyReport) $
+                mapM_ (transformBind dflags anns inspectAnns sizeAnns liveBndrs)
                     $ mg_binds guts
             return guts
 
     where
 
     transformBind
-        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> VarSet -> CoreBind -> CoreM ()
-    transformBind dflags anns inspectAnns liveBndrs bind@(NonRec b _) = do
+        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> SHOW_CORE_SIZE_FM -> VarSet
+        -> CoreBind -> CoreM ()
+    transformBind dflags anns inspectAnns sizeAnns liveBndrs bind@(NonRec b _) = do
         when runInspect $ reportInspected dflags anns inspectAnns bind
+        when runInspect $ reportCoreSize dflags sizeAnns bind
         when (b `elemVarSet` liveBndrs) $ do
             let results = filterNonAllocating
                         $ containsAnns dflags (isJust . lookupUFM anns) bind
@@ -1050,10 +1079,11 @@ fusionReport mesg reportMode runInspect guts = do
                     showInfo b dflags reportMode False "CONSTRUCT"
                         uniqConstr constrs showDetailsConstr
 
-    transformBind dflags anns inspectAnns liveBndrs (Rec bs) =
+    transformBind dflags anns inspectAnns sizeAnns liveBndrs (Rec bs) =
         mapM_
             (\(b, expr) ->
-                transformBind dflags anns inspectAnns liveBndrs (NonRec b expr))
+                transformBind dflags anns inspectAnns sizeAnns liveBndrs
+                    (NonRec b expr))
             bs
 
 -------------------------------------------------------------------------------

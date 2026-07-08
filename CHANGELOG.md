@@ -5,6 +5,8 @@
 * Add a `NoFuseTypes` annotation to locally override `Fuse` for a
   binding, disabling the forced inlining due to Fuse for that binding
   only.
+* Add a `ShowCoreSize` annotation to report the size of the optimized Core
+  of a binding (requires fusion-plugin-types with `ShowCoreSize`)
 
 ## 0.2.8
 

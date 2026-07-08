@@ -92,6 +92,28 @@ import Fusion.Plugin.Types (NoFuseTypes(..))
 myFunction :: ...
 ```
 
+### Reporting Core size with `ShowCoreSize`
+
+To find out how big the optimized Core of a particular binding is, annotate
+that *binding* with `ShowCoreSize` from `Fusion.Plugin.Types`. After all
+fusion-plugin passes have run, the plugin prints the Core size of that
+binding, regardless of the module-wide `-fplugin-opt=...:verbose=N` flag. An
+unexpected blow-up in size is often a symptom of failed fusion or runaway
+inlining:
+
+```haskell
+import Fusion.Plugin.Types (ShowCoreSize(..))
+
+{-# ANN myFunction ShowCoreSize #-}
+myFunction :: ...
+```
+
+This prints a line such as:
+
+```
+fusion-plugin: Core size of myFunction: {terms: 8, types: 3, coercions: 0, joins: 0/0}
+```
+
 ### Plugin options
 
 Note: dump-core does not work for GHC-9.0.x, 9.6.x and 9.8.x.
