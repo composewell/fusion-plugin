@@ -730,12 +730,18 @@ showDetailsCaseMatch
     -> ([CoreBind], Alt CoreBndr)
     -> String
 showDetailsCaseMatch dflags reportMode (binds, c@(ALT_CONSTR(con,_,_))) =
-    listPath dflags binds ++ ": " ++
-        case reportMode of
-            ReportVerbose -> showSDoc dflags (ppr con)
-            ReportVerbose1 -> showSDoc dflags (ppr c)
-            ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
-            _ -> error "transformBind: unreachable"
+    let vstr =
+            case reportMode of
+                ReportVerbose -> showSDoc dflags (ppr con)
+                ReportVerbose1 -> showSDoc dflags (ppr c)
+                ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
+                _ -> error "transformBind: unreachable"
+        tstr =
+            case con of
+                DataAlt dcon ->
+                    " :: " ++ showSDoc dflags (ppr (dataConTyCon dcon))
+                _ -> ""
+    in listPath dflags binds ++ ": " ++ vstr ++ tstr
 
 showDetailsConstr
     :: DynFlags
