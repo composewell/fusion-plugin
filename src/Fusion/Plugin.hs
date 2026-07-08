@@ -619,6 +619,15 @@ contextTyConName (CaseAlt _) = Nothing
 contextTyConName (Constr con) =
     GET_NAME <$> tyConAppTyConPicky_maybe (varType con)
 
+-- | Like 'contextTyConName' but yields the fully-qualified @Module.Type@ name
+-- (via 'qualifiedTyConName') used in reports rather than the raw 'Name'.
+contextQualifiedName :: Context -> Maybe String
+contextQualifiedName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+    Just (qualifiedTyConName (dataConTyCon dcon))
+contextQualifiedName (CaseAlt _) = Nothing
+contextQualifiedName (Constr con) =
+    qualifiedTyConName <$> tyConAppTyConPicky_maybe (varType con)
+
 -- | Drop any hit whose TyCon 'Name' is in the given exclusion list.
 filterExcluded
     :: [Name] -> [([CoreBind], Context)] -> [([CoreBind], Context)]
@@ -821,22 +830,40 @@ showInfo parent dflags reportMode failIt
 -- | If the given top level bind's own binder carries one or more 'Inspect'
 -- annotations, print a report of interesting types case-matched or
 -- constructed anywhere in its RHS, per each annotation's rules. No-op if
--- the binder is not annotated.
-reportInspected :: DynFlags -> UNIQ_FM -> INSPECT_FM -> CoreBind -> CoreM ()
-reportInspected dflags anns inspectAnns bind@(NonRec b _) =
+-- the binder is not annotated, or if the binding has no offending types.
+--
+-- The output honours the module-wide verbosity: at the default (or
+-- @verbose=1@) a single terse @found forbidden types@ line is printed; at
+-- @verbose=2@ and above the full "Inspecting ..." banner plus per-hit
+-- @SCRUTINIZE@/@CONSTRUCT@ breakdown is printed.
+reportInspected
+    :: DynFlags -> ReportMode -> UNIQ_FM -> INSPECT_FM -> CoreBind -> CoreM ()
+reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
     case Map.lookup (getOccString (GET_NAME b)) inspectAnns of
         Nothing -> return ()
         Just ispecs -> mapM_ go ispecs
   where
     go ispec = do
-        putMsgS $ "fusion-plugin: Inspecting "
-                ++ showWithUnique dflags b
-                ++ " (" ++ showSDoc dflags (ppr ispec) ++ ")..."
         (isInteresting, exclusion) <- inspectPredicate anns ispec
         let results = filterNonAllocating
                     $ filterExcluded exclusion (containsAnns dflags isInteresting bind)
+        when (not (null results)) $
+            case reportMode of
+                ReportSilent -> terse results
+                ReportWarn -> terse results
+                _ -> detailed ispec results
 
-            getAlts x =
+    terse results =
+        let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
+        in putMsgS $ "fusion-plugin: found forbidden types in "
+                   ++ getOccString (GET_NAME b)
+                   ++ ": [" ++ DL.intercalate ", " names ++ "]"
+
+    detailed ispec results = do
+        putMsgS $ "fusion-plugin: Inspecting "
+                ++ showWithUnique dflags b
+                ++ " (" ++ showSDoc dflags (ppr ispec) ++ ")..."
+        let getAlts x =
                 case x of
                     (bs, CaseAlt alt) -> Just (bs, alt)
                     _ -> Nothing
@@ -851,11 +878,11 @@ reportInspected dflags anns inspectAnns bind@(NonRec b _) =
             constrs = mapMaybe getConstrs results
             uniqConstr = DL.nub (map (getNonRecBinder . head . fst) constrs)
 
-        showInfo b dflags ReportVerbose False "SCRUTINIZE"
+        showInfo b dflags reportMode False "SCRUTINIZE"
             uniqBinders patternMatches showDetailsCaseMatch
-        showInfo b dflags ReportVerbose False "CONSTRUCT"
+        showInfo b dflags reportMode False "CONSTRUCT"
             uniqConstr constrs showDetailsConstr
-reportInspected _ _ _ (Rec _) =
+reportInspected _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
 
 reportCoreSize :: DynFlags -> SHOW_CORE_SIZE_FM -> CoreBind -> CoreM ()
@@ -1127,7 +1154,7 @@ fusionReport mesg reportMode runInspect guts = do
         -> CoreBind -> CoreM ()
     transformBind dflags anns inspectAnns sizeAnns dumpAnns pkgName modName
             liveBndrs bind@(NonRec b _) = do
-        when runInspect $ reportInspected dflags anns inspectAnns bind
+        when runInspect $ reportInspected dflags reportMode anns inspectAnns bind
         when runInspect $ reportCoreSize dflags sizeAnns bind
         when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
         when (b `elemVarSet` liveBndrs) $ do
