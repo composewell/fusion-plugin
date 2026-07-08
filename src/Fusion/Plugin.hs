@@ -64,6 +64,11 @@ import qualified Data.List as DL
 import qualified Data.Map.Strict as Map
 import qualified Language.Haskell.TH.Syntax as TH
 
+-- DumpCore annotation related imports (available on all supported GHC versions)
+import Data.Char (isDigit)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>))
+
 -- Imports for specific compiler versions
 #if MIN_VERSION_ghc(9,6,0)
 import GHC.Core.Lint.Interactive (interactiveInScope)
@@ -130,7 +135,9 @@ import CoreStats (exprStats)
 
 -- Imports from fusion-plugin-types
 import Fusion.Plugin.Types
-    (Fuse(..), FuseTypes(..), NoFuseTypes(..), Inspect(..), ShowCoreSize(..))
+    ( Fuse(..), FuseTypes(..), NoFuseTypes(..), Inspect(..), ShowCoreSize(..)
+    , DumpCore(..)
+    )
 
 -- $using
 --
@@ -361,6 +368,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #define FUSE_TYPES_FM Map.Map String [FuseTypes]
 #define NO_FUSE_TYPES_FM Map.Map String [NoFuseTypes]
 #define SHOW_CORE_SIZE_FM Map.Map String [ShowCoreSize]
+#define DUMP_CORE_FM Map.Map String [DumpCore]
 
 hasInlineBinder :: CoreBndr -> Bool
 hasInlineBinder bndr =
@@ -844,6 +852,57 @@ reportCoreSize dflags sizeAnns (NonRec b rhs) =
 reportCoreSize _ _ (Rec _) =
     error "reportCoreSize: expecting only NonRec binders"
 
+-- | Split a string on @\'-\'@ characters.
+splitOnDash :: String -> [String]
+splitOnDash s =
+    case break (== '-') s of
+        (a, []) -> [a]
+        (a, _ : rest) -> a : splitOnDash rest
+
+-- | Recover the bare package name from a unit-id string. During a build the
+-- unit id of the package being compiled looks like @my-pkg-0.2.8-inplace@ (or
+-- with a hash instead of @inplace@); we strip the trailing version and any
+-- component suffix, leaving just @my-pkg@. If no version-like component is
+-- found the string is returned unchanged.
+packageNameFromUnitId :: String -> String
+packageNameFromUnitId uid =
+    case break isVersion (splitOnDash uid) of
+        (before, _ : _) | not (null before) -> DL.intercalate "-" before
+        _ -> uid
+  where
+    isVersion x = not (null x) && all (\c -> isDigit c || c == '.') x
+
+-- | The bare package name of the module currently being compiled.
+modulePackageName :: Module -> String
+modulePackageName =
+    packageNameFromUnitId
+#if MIN_VERSION_ghc(9,0,0)
+        . unitString . moduleUnit
+#else
+        . unitIdString . moduleUnitId
+#endif
+
+-- | If the given top level bind's own binder carries a 'DumpCore' annotation,
+-- write the Core of that binding to a file under the @fusion-plugin-output@
+-- directory. No-op if the binder is not annotated.
+reportDumpCore ::
+    DynFlags -> String -> String -> DUMP_CORE_FM -> CoreBind -> CoreM ()
+reportDumpCore dflags pkgName modName dumpAnns bind@(NonRec b _) =
+    case Map.lookup (getOccString (GET_NAME b)) dumpAnns of
+        Nothing -> return ()
+        Just _ -> do
+            let dir = "fusion-plugin-output" </> pkgName
+                fileName =
+                    modName ++ "." ++ getOccString (GET_NAME b) ++ ".dump-simpl"
+                path = dir </> fileName
+            liftIO $ do
+                createDirectoryIfMissing True dir
+                writeFile path (showSDoc dflags (ppr bind) ++ "\n")
+            putMsgS $ "fusion-plugin: Dumped core of "
+                    ++ showWithUnique dflags b ++ " to " ++ path
+reportDumpCore _ _ _ _ (Rec _) =
+    error "reportDumpCore: expecting only NonRec binders"
+
 markInline :: Int -> ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
 markInline pass reportMode failIt transform guts = do
     putMsgS $ "fusion-plugin: Checking bindings to inline..."
@@ -1016,9 +1075,14 @@ fusionReport mesg reportMode runInspect guts = do
             if runInspect
             then getAnnotationsByStableName deserializeWithData guts
             else Map.empty
+        dumpAnns =
+            if runInspect
+            then getAnnotationsByStableName deserializeWithData guts
+            else Map.empty
         anyInspect = runInspect && not (Map.null inspectAnns)
         anyShowCoreSize = runInspect && not (Map.null sizeAnns)
-        anyReport = anyInspect || anyShowCoreSize
+        anyDumpCore = runInspect && not (Map.null dumpAnns)
+        anyReport = anyInspect || anyShowCoreSize || anyDumpCore
     case reportMode of
         ReportSilent | not anyReport -> return guts
         _ -> do
@@ -1027,19 +1091,27 @@ fusionReport mesg reportMode runInspect guts = do
             dflags <- getDynFlags
             anns <- FMAP_SND getAnnotations deserializeWithData guts
             let liveBndrs = liveTopLevelBinders guts
+            let pkgName = modulePackageName (mg_module guts)
+            let modName = moduleNameString (moduleName (mg_module guts))
             when (anyUFM (any (== Fuse)) anns || anyReport) $
-                mapM_ (transformBind dflags anns inspectAnns sizeAnns liveBndrs)
+                mapM_
+                    (transformBind
+                        dflags anns inspectAnns sizeAnns dumpAnns
+                        pkgName modName liveBndrs)
                     $ mg_binds guts
             return guts
 
     where
 
     transformBind
-        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> SHOW_CORE_SIZE_FM -> VarSet
+        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> SHOW_CORE_SIZE_FM -> DUMP_CORE_FM
+        -> String -> String -> VarSet
         -> CoreBind -> CoreM ()
-    transformBind dflags anns inspectAnns sizeAnns liveBndrs bind@(NonRec b _) = do
+    transformBind dflags anns inspectAnns sizeAnns dumpAnns pkgName modName
+            liveBndrs bind@(NonRec b _) = do
         when runInspect $ reportInspected dflags anns inspectAnns bind
         when runInspect $ reportCoreSize dflags sizeAnns bind
+        when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
         when (b `elemVarSet` liveBndrs) $ do
             let results = filterNonAllocating
                         $ containsAnns dflags (isJust . lookupUFM anns) bind
@@ -1079,11 +1151,12 @@ fusionReport mesg reportMode runInspect guts = do
                     showInfo b dflags reportMode False "CONSTRUCT"
                         uniqConstr constrs showDetailsConstr
 
-    transformBind dflags anns inspectAnns sizeAnns liveBndrs (Rec bs) =
+    transformBind dflags anns inspectAnns sizeAnns dumpAnns pkgName modName
+            liveBndrs (Rec bs) =
         mapM_
             (\(b, expr) ->
-                transformBind dflags anns inspectAnns sizeAnns liveBndrs
-                    (NonRec b expr))
+                transformBind dflags anns inspectAnns sizeAnns dumpAnns
+                    pkgName modName liveBndrs (NonRec b expr))
             bs
 
 -------------------------------------------------------------------------------
