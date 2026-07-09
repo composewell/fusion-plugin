@@ -4,14 +4,17 @@ name:                fusion-plugin
 version:             0.2.8
 synopsis:            GHC plugin to make stream fusion more predictable.
 description:
-  This plugin provides the programmer with a way to annotate certain
-  types using a 'Fuse' pragma from the
+  This GHC plugin provides the programmer with a way to annotate types
+  and functions using various annotations from the
   <https://hackage.haskell.org/package/fusion-plugin-types fusion-plugin-types>
-  package. The programmer would annotate the types that are to be
-  eliminated by fusion. During the simplifier phase the plugin goes
-  through the relevant bindings and if one of these types are found
-  inside a binding then that binding is marked to be inlined
-  irrespective of the size.
+  package, via GHC's @ANN@ pragma. The annotations are used during
+  compilation to eliminate intermediate constructors by automatically
+  enforcing inlining within GHC where fusion is needed.  The plugin also
+  provides annotations to verify and report that specific types are
+  actually eliminated from the function in the final generated Core. It
+  also provides debugging mechanisms to dump the Core for a specific
+  function or report if the Core size blows up due to aggressive
+  optimizations.
   .
   This plugin was primarily motivated by
   <https://streamly.composewell.com streamly> but it can
