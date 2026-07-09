@@ -125,6 +125,9 @@ in a different file.
 `-fplugin-opt=Fusion.Plugin:verbose=1`: report unfused functions. Verbosity
 levels `2`, `3`, `4` can be used for more verbose output.
 
+`-fplugin-opt=Fusion.Plugin:werror`: treat annotation-check violations as
+errors instead of warnings.
+
 ### Reporting Programmer Annotated Binders
 
 The `verbose=N` report above covers the whole module. To check a single

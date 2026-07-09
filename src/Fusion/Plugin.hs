@@ -249,18 +249,25 @@ data ReportMode =
 data Options = Options
     { optionsDumpCore :: Bool
     , optionsVerbosityLevel :: ReportMode
+    , optionsWError :: Bool
     } deriving Show
 
 defaultOptions :: Options
 defaultOptions = Options
     { optionsDumpCore = False
     , optionsVerbosityLevel = ReportSilent
+    , optionsWError = False
     }
 
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setDumpCore val = do
     (args, opts) <- get
     put (args, opts { optionsDumpCore = val })
+
+setWError :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setWError val = do
+    (args, opts) <- get
+    put (args, opts { optionsWError = val })
 
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
@@ -290,6 +297,7 @@ parseOptions args = do
     parseOpt opt =
         case opt of
             "dump-core" -> setDumpCore True
+            "werror" -> setWError True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1
@@ -823,13 +831,12 @@ showInfo
     :: CoreBndr
     -> DynFlags
     -> ReportMode
-    -> Bool
     -> String
     -> [CoreBndr]
     -> [([CoreBind], a)]
     -> (DynFlags -> ReportMode -> ([CoreBind], a) -> String)
     -> CoreM ()
-showInfo parent dflags reportMode failIt
+showInfo parent dflags reportMode
         tag uniqBinders annotated showDetails =
     when (uniqBinders /= []) $ do
         let mesg = "In "
@@ -847,7 +854,6 @@ showInfo parent dflags reportMode failIt
                 putMsgS $ DL.unlines
                         $ DL.nub
                         $ map (showDetails dflags reportMode) annotated
-        when failIt $ error "failing"
 
 -- | If the given top level bind's own binder carries an 'InspectTypes'
 -- annotation, print a report of interesting types case-matched or
@@ -858,22 +864,28 @@ showInfo parent dflags reportMode failIt
 -- @verbose=1@) a single terse @found forbidden types@ line is printed; at
 -- @verbose=2@ and above the full "Inspecting ..." banner plus per-hit
 -- @SCRUTINIZE@/@CONSTRUCT@ breakdown is printed.
+-- Returns 0 on no violations and 1 otherwise.
 reportInspected
-    :: DynFlags -> ReportMode -> UNIQ_FM -> INSPECT_FM -> CoreBind -> CoreM ()
+    :: DynFlags -> ReportMode -> UNIQ_FM -> INSPECT_FM -> CoreBind -> CoreM Int
 reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
     case Map.lookup (getOccString (GET_NAME b)) inspectAnns of
-        Nothing -> return ()
+        Nothing -> return 0
         Just ispec -> go ispec
-  where
+
+    where
+
     go ispec = do
         (isInteresting, exclusion) <- inspectPredicate anns ispec
         let results = filterNonAllocating
                     $ filterExcluded exclusion (containsAnns dflags isInteresting bind)
-        when (not (null results)) $
+        if null results
+        then return 0
+        else do
             case reportMode of
                 ReportSilent -> terse results
                 ReportWarn -> terse results
                 _ -> detailed ispec results
+            return 1
 
     terse results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
@@ -900,9 +912,9 @@ reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
             constrs = mapMaybe getConstrs results
             uniqConstr = DL.nub (map (getNonRecBinder . head . fst) constrs)
 
-        showInfo b dflags reportMode False "SCRUTINIZE"
+        showInfo b dflags reportMode "SCRUTINIZE"
             uniqBinders patternMatches showDetailsCaseMatch
-        showInfo b dflags reportMode False "CONSTRUCT"
+        showInfo b dflags reportMode "CONSTRUCT"
             uniqConstr constrs showDetailsConstr
 reportInspected _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
@@ -961,21 +973,26 @@ inspectClassPredicate (PermitTypeClasses thAllow) = do
 -- annotation, print a report of the type classes present in its Core that the
 -- directive flags as forbidden. No-op if the binder is not annotated, or if no
 -- offending class is present.
+-- Returns 0 on no violations and 1 otherwise.
 reportInspectedClasses
     :: DynFlags
     -> ReportMode
     -> INSPECT_CLASSES_FM
     -> CoreBind
-    -> CoreM ()
+    -> CoreM Int
 reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
     case Map.lookup (getOccString (GET_NAME b)) classAnns of
-        Nothing -> return ()
+        Nothing -> return 0
         Just ispec -> go ispec
-  where
+
+    where
+
     go ispec = do
         isInteresting <- inspectClassPredicate ispec
         let hits = filter (isInteresting . getName) (classTyConsInBind bind)
-        when (not (null hits)) $
+        if null hits
+        then return 0
+        else do
             case reportMode of
                 ReportSilent -> report ispec hits
                 ReportWarn -> report ispec hits
@@ -984,6 +1001,7 @@ reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
                             ++ showWithUnique dflags b
                             ++ " (" ++ showSDoc dflags (ppr ispec) ++ ")..."
                     report ispec hits
+            return 1
 
     report _ hits =
         let names = DL.nub (map qualifiedTyConName hits)
@@ -993,11 +1011,12 @@ reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
 reportInspectedClasses _ _ _ (Rec _) =
     error "reportInspectedClasses: expecting only NonRec binders"
 
+-- Returns 0 on no violations and 1 otherwise.
 reportCoreSize
-    :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM -> CoreBind -> CoreM ()
+    :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM -> CoreBind -> CoreM Int
 reportCoreSize dflags reportMode sizeAnns (NonRec b rhs) =
     case Map.lookup (getOccString (GET_NAME b)) sizeAnns of
-        Nothing -> return ()
+        Nothing -> return 0
         Just ann -> go ann
   where
     stats = exprStats rhs
@@ -1012,12 +1031,15 @@ reportCoreSize dflags reportMode sizeAnns (NonRec b rhs) =
                         ++ showWithUnique dflags b
                         ++ ": "
                         ++ showSDoc dflags (ppr stats)
-        when (terms > maxSize) $
+        if terms > maxSize
+        then do
             putMsgS $ "fusion-plugin: core size of "
                     ++ showWithUnique dflags b
                     ++ " (" ++ show terms
                     ++ " terms) exceeds the specified size ("
                     ++ show maxSize ++ " terms)."
+            return 1
+        else return 0
 reportCoreSize _ _ _ (Rec _) =
     error "reportCoreSize: expecting only NonRec binders"
 
@@ -1072,8 +1094,8 @@ reportDumpCore dflags pkgName modName dumpAnns bind@(NonRec b _) =
 reportDumpCore _ _ _ _ (Rec _) =
     error "reportDumpCore: expecting only NonRec binders"
 
-markInline :: Int -> ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
-markInline pass reportMode failIt transform guts = do
+markInline :: Int -> ReportMode -> Bool -> ModGuts -> CoreM ModGuts
+markInline pass reportMode transform guts = do
     putMsgS $ "fusion-plugin: Checking bindings to inline..."
     dflags <- getDynFlags
     anns <- FMAP_SND getAnnotations deserializeWithData guts
@@ -1121,9 +1143,9 @@ markInline pass reportMode failIt transform guts = do
                     putMsgS "INLINE required on:"
                     putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
             _ -> do
-                showInfo b dflags reportMode failIt "SCRUTINIZE"
+                showInfo b dflags reportMode "SCRUTINIZE"
                     uniqPat patternMatches showDetailsCaseMatch
-                showInfo b dflags reportMode failIt "CONSTRUCT"
+                showInfo b dflags reportMode "CONSTRUCT"
                     uniqConstr constrs showDetailsConstr
 
         let bind' = do
@@ -1144,9 +1166,9 @@ markInline pass reportMode failIt transform guts = do
                 _ -> error "Bug: expecting NonRec binder"
 
 -- | Core pass to mark functions scrutinizing constructors marked with Fuse
-fusionMarkInline :: Int -> ReportMode -> Bool -> Bool -> CoreToDo
-fusionMarkInline pass opt failIt transform =
-    CoreDoPluginPass "Mark for inlining" (markInline pass opt failIt transform)
+fusionMarkInline :: Int -> ReportMode -> Bool -> CoreToDo
+fusionMarkInline pass opt transform =
+    CoreDoPluginPass "Mark for inlining" (markInline pass opt transform)
 
 -------------------------------------------------------------------------------
 -- Simplification pass after marking inline
@@ -1235,9 +1257,12 @@ liveTopLevelBinders guts = go initial initial
             in go newFrontier newVisited
 
 -- | @runInspect@ controls whether the per-binding 'InspectTypes' annotations are
--- also processed.
-fusionReport :: String -> ReportMode -> Bool -> ModGuts -> CoreM ModGuts
-fusionReport mesg reportMode runInspect guts = do
+-- also processed. When @werror@ is set, the build is failed (after all
+-- annotation violations in the module have been reported) if any
+-- annotation-check violation ('InspectTypes', 'InspectTypeClasses' or
+-- 'MaxCoreSize') was found.
+fusionReport :: String -> ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
+fusionReport mesg reportMode runInspect werror guts = do
     inspectAnns <-
         if runInspect
         then getAnnotationsByStableName "InspectTypes" deserializeWithData guts
@@ -1271,27 +1296,44 @@ fusionReport mesg reportMode runInspect guts = do
             let liveBndrs = liveTopLevelBinders guts
             let pkgName = modulePackageName (mg_module guts)
             let modName = moduleNameString (moduleName (mg_module guts))
-            when (anyUFM (any (== Fuse)) anns || anyReport) $
-                mapM_
-                    (transformBind
-                        dflags anns inspectAnns classAnns sizeAnns dumpAnns
-                        pkgName modName liveBndrs)
-                    $ mg_binds guts
+            violations <-
+                if anyUFM (any (== Fuse)) anns || anyReport
+                then fmap sum
+                        $ mapM
+                            (transformBind
+                                dflags anns inspectAnns classAnns sizeAnns
+                                dumpAnns pkgName modName liveBndrs)
+                        $ mg_binds guts
+                else return 0
+            when (werror && violations > 0) $ do
+                putMsgS $ "fusion-plugin: " ++ show violations
+                        ++ " annotation violation(s) reported in " ++ modName
+                        ++ "; failing the build (werror)."
+                liftIO $ throwGhcExceptionIO
+                    (ProgramError
+                        "fusion-plugin: annotation violations found (werror)")
             return guts
 
     where
 
+    -- Returns the number of annotation-check violations reported for this
+    -- binding (the module-wide unfused report below is not counted).
     transformBind
         :: DynFlags -> UNIQ_FM -> INSPECT_FM -> INSPECT_CLASSES_FM
         -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
         -> String -> String -> VarSet
-        -> CoreBind -> CoreM ()
+        -> CoreBind -> CoreM Int
     transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
             pkgName modName liveBndrs bind@(NonRec b _) = do
-        when runInspect $ reportInspected dflags reportMode anns inspectAnns bind
-        when runInspect $
-            reportInspectedClasses dflags reportMode classAnns bind
-        when runInspect $ reportCoreSize dflags reportMode sizeAnns bind
+        n1 <- if runInspect
+              then reportInspected dflags reportMode anns inspectAnns bind
+              else return 0
+        n2 <- if runInspect
+              then reportInspectedClasses dflags reportMode classAnns bind
+              else return 0
+        n3 <- if runInspect
+              then reportCoreSize dflags reportMode sizeAnns bind
+              else return 0
         when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
         when (b `elemVarSet` liveBndrs) $ do
             let results = filterNonAllocating
@@ -1327,18 +1369,21 @@ fusionReport mesg reportMode runInspect guts = do
                         putMsgS "Unfused bindings:"
                         putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
                 _ -> do
-                    showInfo b dflags reportMode False "SCRUTINIZE"
+                    showInfo b dflags reportMode "SCRUTINIZE"
                         uniqBinders patternMatches showDetailsCaseMatch
-                    showInfo b dflags reportMode False "CONSTRUCT"
+                    showInfo b dflags reportMode "CONSTRUCT"
                         uniqConstr constrs showDetailsConstr
+        return (n1 + n2 + n3)
 
     transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
             pkgName modName liveBndrs (Rec bs) =
-        mapM_
-            (\(b, expr) ->
-                transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
-                    pkgName modName liveBndrs (NonRec b expr))
-            bs
+        fmap sum
+            $ mapM
+                (\(b, expr) ->
+                    transformBind
+                        dflags anns inspectAnns classAnns sizeAnns dumpAnns
+                        pkgName modName liveBndrs (NonRec b expr))
+                bs
 
 -------------------------------------------------------------------------------
 -- Dump core passes
@@ -1653,19 +1698,23 @@ install args todos = do
          else id) $
         insertAfterSimplPhase0
             todos
-            [ fusionMarkInline 1 ReportSilent False True
+            [ fusionMarkInline 1 ReportSilent True
             , simplify
-            , fusionMarkInline 2 ReportSilent False True
+            , fusionMarkInline 2 ReportSilent True
             , simplify
-            , fusionMarkInline 3 ReportSilent False True
+            , fusionMarkInline 3 ReportSilent True
             , simplify
             -- This lets us know what was left unfused after all the inlining
             -- and case-of-case transformations.
             , let mesg = "Check unfused (post inlining)"
-              in CoreDoPluginPass mesg (fusionReport mesg ReportSilent False)
+              in CoreDoPluginPass mesg
+                    (fusionReport mesg ReportSilent False False)
             ]
             (let mesg = "Check unfused (final)"
-                 report = fusionReport mesg (optionsVerbosityLevel options) True
+                 report =
+                    fusionReport
+                        mesg (optionsVerbosityLevel options) True
+                        (optionsWError options)
             in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
