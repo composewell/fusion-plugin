@@ -135,7 +135,8 @@ import CoreStats (exprStats, CoreStats(cs_tm))
 
 -- Imports from fusion-plugin-types
 import Fusion.Plugin.Types
-    ( Fuse(..), FuseTypes(..), NoFuseTypes(..), InspectTypes(..), MaxCoreSize(..)
+    ( Fuse(..), FuseTypes(..), NoFuseTypes(..), InspectTypes(..)
+    , InspectTypeClasses(..), MaxCoreSize(..)
     , DumpCore(..)
     )
 
@@ -365,6 +366,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 -- Unique -- and even its 'NameSort' -- is not guaranteed to survive the
 -- Core-to-core passes while OccName stays the same.
 #define INSPECT_FM Map.Map String [InspectTypes]
+#define INSPECT_CLASSES_FM Map.Map String [InspectTypeClasses]
 #define FUSE_TYPES_FM Map.Map String [FuseTypes]
 #define NO_FUSE_TYPES_FM Map.Map String [NoFuseTypes]
 #define MAX_CORE_SIZE_FM Map.Map String [MaxCoreSize]
@@ -797,6 +799,14 @@ instance Outputable InspectTypes where
         text "ForbidFused" <+> text (show f) <+> text (show a)
     ppr (PermitTypes names) = text "PermitTypes" <+> text (show names)
 
+-- Orphan instance for 'InspectTypeClasses', used only to print a banner naming
+-- the directive that triggered a focused report.
+instance Outputable InspectTypeClasses where
+    ppr (ForbidTypeClasses names) =
+        text "ForbidTypeClasses" <+> text (show names)
+    ppr (PermitTypeClasses names) =
+        text "PermitTypeClasses" <+> text (show names)
+
 showInfo
     :: CoreBndr
     -> DynFlags
@@ -884,6 +894,92 @@ reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
             uniqConstr constrs showDetailsConstr
 reportInspected _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
+
+-------------------------------------------------------------------------------
+-- Inspect the presence/absence of type classes in a binding's Core
+-------------------------------------------------------------------------------
+
+-- | Collect the class 'TyCon's appearing anywhere in the Core of a binding. A
+-- type class manifests in Core as a dictionary; its type has the class 'TyCon'
+-- at the head (see 'isClassTyCon'). We gather the 'TyCon's mentioned by the
+-- type of every 'Var', binder, case scrutinee and 'Type' node in the RHS and
+-- keep those that are classes.
+classTyConsInBind :: CoreBind -> [TyCon]
+classTyConsInBind bind =
+    nonDetEltsUniqSet (goBind bind)
+
+    where
+
+    fromType t = filterUniqSet isClassTyCon (tyConsOfType t)
+
+    go (Var i) = fromType (varType i)
+    go (Lit _) = emptyUniqSet
+    go (App e1 e2) = go e1 `unionUniqSets` go e2
+    go (Lam b e) = fromType (varType b) `unionUniqSets` go e
+    go (Let b e) = goBind b `unionUniqSets` go e
+    go (Case e b t alts) =
+        go e
+            `unionUniqSets` fromType (varType b)
+            `unionUniqSets` fromType t
+            `unionUniqSets` unionManyUniqSets (map goAlt alts)
+    go (Cast e _) = go e
+    go (Tick _ e) = go e
+    go (Type t) = fromType t
+    go (Coercion _) = emptyUniqSet
+
+    goAlt (ALT_CONSTR(_,bs,e)) =
+        unionManyUniqSets (map (fromType . varType) bs) `unionUniqSets` go e
+
+    goBind (NonRec b e) = fromType (varType b) `unionUniqSets` go e
+    goBind (Rec bs) =
+        unionManyUniqSets
+            (map (\(b, e) -> fromType (varType b) `unionUniqSets` go e) bs)
+
+-- | Build the "isInteresting" predicate over class 'Name's for a given
+-- 'InspectTypeClasses' directive.
+inspectClassPredicate :: InspectTypeClasses -> CoreM (Name -> Bool)
+inspectClassPredicate (ForbidTypeClasses thNames) = do
+    names <- resolveTHNames thNames
+    return (\n -> n `elem` names)
+inspectClassPredicate (PermitTypeClasses thAllow) = do
+    allowed <- resolveTHNames thAllow
+    return (\n -> n `notElem` allowed)
+
+-- | If the given top level bind's own binder carries one or more
+-- 'InspectTypeClasses' annotations, print a report of the type classes present
+-- in its Core that the directive flags as forbidden. No-op if the binder is
+-- not annotated, or if no offending class is present.
+reportInspectedClasses
+    :: DynFlags
+    -> ReportMode
+    -> INSPECT_CLASSES_FM
+    -> CoreBind
+    -> CoreM ()
+reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
+    case Map.lookup (getOccString (GET_NAME b)) classAnns of
+        Nothing -> return ()
+        Just ispecs -> mapM_ go ispecs
+  where
+    go ispec = do
+        isInteresting <- inspectClassPredicate ispec
+        let hits = filter (isInteresting . getName) (classTyConsInBind bind)
+        when (not (null hits)) $
+            case reportMode of
+                ReportSilent -> report ispec hits
+                ReportWarn -> report ispec hits
+                _ -> do
+                    putMsgS $ "fusion-plugin: Inspecting "
+                            ++ showWithUnique dflags b
+                            ++ " (" ++ showSDoc dflags (ppr ispec) ++ ")..."
+                    report ispec hits
+
+    report _ hits =
+        let names = DL.nub (map qualifiedTyConName hits)
+        in putMsgS $ "fusion-plugin: found forbidden type classes in "
+                   ++ getOccString (GET_NAME b)
+                   ++ ": [" ++ DL.intercalate ", " names ++ "]"
+reportInspectedClasses _ _ _ (Rec _) =
+    error "reportInspectedClasses: expecting only NonRec binders"
 
 reportCoreSize
     :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM -> CoreBind -> CoreM ()
@@ -1140,10 +1236,16 @@ fusionReport mesg reportMode runInspect guts = do
             if runInspect
             then getAnnotationsByStableName deserializeWithData guts
             else Map.empty
+        classAnns =
+            if runInspect
+            then getAnnotationsByStableName deserializeWithData guts
+            else Map.empty
         anyInspect = runInspect && not (Map.null inspectAnns)
+        anyInspectClasses = runInspect && not (Map.null classAnns)
         anyMaxCoreSize = runInspect && not (Map.null sizeAnns)
         anyDumpCore = runInspect && not (Map.null dumpAnns)
-        anyReport = anyInspect || anyMaxCoreSize || anyDumpCore
+        anyReport =
+            anyInspect || anyInspectClasses || anyMaxCoreSize || anyDumpCore
     case reportMode of
         ReportSilent | not anyReport -> return guts
         _ -> do
@@ -1157,7 +1259,7 @@ fusionReport mesg reportMode runInspect guts = do
             when (anyUFM (any (== Fuse)) anns || anyReport) $
                 mapM_
                     (transformBind
-                        dflags anns inspectAnns sizeAnns dumpAnns
+                        dflags anns inspectAnns classAnns sizeAnns dumpAnns
                         pkgName modName liveBndrs)
                     $ mg_binds guts
             return guts
@@ -1165,12 +1267,15 @@ fusionReport mesg reportMode runInspect guts = do
     where
 
     transformBind
-        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
+        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> INSPECT_CLASSES_FM
+        -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
         -> String -> String -> VarSet
         -> CoreBind -> CoreM ()
-    transformBind dflags anns inspectAnns sizeAnns dumpAnns pkgName modName
-            liveBndrs bind@(NonRec b _) = do
+    transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
+            pkgName modName liveBndrs bind@(NonRec b _) = do
         when runInspect $ reportInspected dflags reportMode anns inspectAnns bind
+        when runInspect $
+            reportInspectedClasses dflags reportMode classAnns bind
         when runInspect $ reportCoreSize dflags reportMode sizeAnns bind
         when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
         when (b `elemVarSet` liveBndrs) $ do
@@ -1212,11 +1317,11 @@ fusionReport mesg reportMode runInspect guts = do
                     showInfo b dflags reportMode False "CONSTRUCT"
                         uniqConstr constrs showDetailsConstr
 
-    transformBind dflags anns inspectAnns sizeAnns dumpAnns pkgName modName
-            liveBndrs (Rec bs) =
+    transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
+            pkgName modName liveBndrs (Rec bs) =
         mapM_
             (\(b, expr) ->
-                transformBind dflags anns inspectAnns sizeAnns dumpAnns
+                transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
                     pkgName modName liveBndrs (NonRec b expr))
             bs
 

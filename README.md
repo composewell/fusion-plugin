@@ -168,6 +168,28 @@ function3 :: ...
 Type references are TH `Name`s (`''SomeType`), so a typo or a stale
 reference to a renamed type is a compile error, not a silently-stale check.
 
+### Checking type classes with `InspectTypeClasses`
+
+To check the presence or absence of type classes in the Core of a binding,
+annotate it with `InspectTypeClasses`. A type class appears in Core as a
+dictionary argument; a class that survives to Core usually means a dictionary
+that failed to specialize away. Like `InspectTypes`, an annotated binding is
+always reported regardless of `verbose=N`:
+
+```haskell
+{-# LANGUAGE TemplateHaskellQuotes #-}
+
+import Fusion.Plugin.Types (InspectTypeClasses(..))
+
+-- 'Num' should not appear in the core.
+{-# ANN function1 (ForbidTypeClasses [''Num]) #-}
+function1 :: ...
+
+-- 'Ord' and 'Eq' can appear but no other type class can be present.
+{-# ANN function2 (PermitTypeClasses [''Ord, ''Eq]) #-}
+function2 :: ...
+```
+
 ## See also
 
 If you are a library author looking to annotate the types, you need to
