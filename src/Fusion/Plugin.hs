@@ -126,10 +126,12 @@ import qualified GHC.Plugins as GhcPlugins
 import GhcPlugins
 #endif
 
--- throwGhcExceptionIO/ProgramError are re-exported by GHC.Plugins on 9.2+ but
--- not on 9.0, so import them explicitly there.
+-- throwGhcExceptionIO/ProgramError are re-exported by GHC(.)Plugins on 9.2+ but
+-- not on 8.10 or 9.0, so import them explicitly there.
 #if MIN_VERSION_ghc(9,0,0) && !MIN_VERSION_ghc(9,2,0)
 import GHC.Utils.Panic (throwGhcExceptionIO, GhcException(ProgramError))
+#elif !MIN_VERSION_ghc(9,0,0)
+import Panic (throwGhcExceptionIO, GhcException(ProgramError))
 #endif
 
 -- Core size reporting
@@ -372,7 +374,9 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #else
 #define IS_ACTIVE isActiveIn 0
 #define UNIQ_FM UniqFM [Fuse]
-#define GET_NAME getUnique
+-- getName (rather than getUnique) so it works as both a UniqFM key and a
+-- 'Name' for the report/inspect code; a TyCon shares its Unique with its Name.
+#define GET_NAME getName
 #define FMAP_SND
 #endif
 
