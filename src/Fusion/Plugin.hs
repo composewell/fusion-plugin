@@ -365,12 +365,12 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 -- Keyed by 'OccName' string rather than by 'Name'/'Unique'. A top-level Id's
 -- Unique -- and even its 'NameSort' -- is not guaranteed to survive the
 -- Core-to-core passes while OccName stays the same.
-#define INSPECT_FM Map.Map String [InspectTypes]
-#define INSPECT_CLASSES_FM Map.Map String [InspectTypeClasses]
-#define FUSE_TYPES_FM Map.Map String [FuseTypes]
-#define NO_FUSE_TYPES_FM Map.Map String [NoFuseTypes]
-#define MAX_CORE_SIZE_FM Map.Map String [MaxCoreSize]
-#define DUMP_CORE_FM Map.Map String [DumpCore]
+#define INSPECT_FM Map.Map String InspectTypes
+#define INSPECT_CLASSES_FM Map.Map String InspectTypeClasses
+#define FUSE_TYPES_FM Map.Map String FuseTypes
+#define NO_FUSE_TYPES_FM Map.Map String NoFuseTypes
+#define MAX_CORE_SIZE_FM Map.Map String MaxCoreSize
+#define DUMP_CORE_FM Map.Map String DumpCore
 
 hasInlineBinder :: CoreBndr -> Bool
 hasInlineBinder bndr =
@@ -675,10 +675,15 @@ filterNonAllocating = filter (isAllocating . snd)
 -- (before any Core-to-core pass runs) and it is never rewritten by any
 -- 'CoreToDo', so the 'Name's inside it are exactly as resolved by the renamer,
 -- unaffected by any later binder cloning/renaming.
+--
+-- At most one annotation of this type is permitted per binding: a binding
+-- carrying more than one is a compile error (the @annName@ argument names the
+-- annotation type in that message).
 getAnnotationsByStableName
-    :: Data a => ([Word8] -> a) -> ModGuts -> Map.Map String [a]
-getAnnotationsByStableName deserialize guts =
-    Map.fromListWith (++) (mapMaybe annPair (mg_anns guts))
+    :: Data a => String -> ([Word8] -> a) -> ModGuts -> CoreM (Map.Map String a)
+getAnnotationsByStableName annName deserialize guts =
+    Map.traverseWithKey single
+        (Map.fromListWith (++) (mapMaybe annPair (mg_anns guts)))
 
     where
 
@@ -686,29 +691,36 @@ getAnnotationsByStableName deserialize guts =
         (\v -> (getOccString name, [v])) <$> fromSerialized deserialize payload
     annPair _ = Nothing
 
+    single _ [v] = return v
+    single name _ =
+        error $ "fusion-plugin: the binding '" ++ name
+              ++ "' has more than one " ++ annName
+              ++ " annotation; at most one " ++ annName
+              ++ " annotation is allowed per binding."
+
 -- | Resolve a list of Template Haskell 'TH.Name's to GHC 'Name's.
 resolveTHNames :: [TH.Name] -> CoreM [Name]
 resolveTHNames = fmap catMaybes . mapM thNameToGhcName
 
--- | If the given top level binder carries one or more 'FuseTypes'
--- annotations, return the module-wide 'Fuse' annotation map augmented with an
--- entry for each of the named types, so that they are treated exactly like
--- 'Fuse'-annotated types while inlining inside this binding -- and nowhere
--- else. Returns the map unchanged if the binder is not annotated.
+-- | If the given top level binder carries a 'FuseTypes' annotation, return the
+-- module-wide 'Fuse' annotation map augmented with an entry for each of the
+-- named types, so that they are treated exactly like 'Fuse'-annotated types
+-- while inlining inside this binding -- and nowhere else. Returns the map
+-- unchanged if the binder is not annotated.
 augmentFuseTypes :: UNIQ_FM -> FUSE_TYPES_FM -> CoreBndr -> CoreM (UNIQ_FM)
 augmentFuseTypes anns fuseTypesAnns b =
     case Map.lookup (getOccString (GET_NAME b)) fuseTypesAnns of
         Nothing -> return anns
-        Just fts -> do
-            names <- resolveTHNames (concatMap (\(FuseTypes ns) -> ns) fts)
+        Just (FuseTypes ns) -> do
+            names <- resolveTHNames ns
             return $ plusUFM anns (listToUFM (map (\n -> (n, [Fuse])) names))
 
 removeFuseTypes :: UNIQ_FM -> NO_FUSE_TYPES_FM -> CoreBndr -> CoreM (UNIQ_FM)
 removeFuseTypes anns noFuseTypesAnns b =
     case Map.lookup (getOccString (GET_NAME b)) noFuseTypesAnns of
         Nothing -> return anns
-        Just fts -> do
-            names <- resolveTHNames (concatMap (\(NoFuseTypes ns) -> ns) fts)
+        Just (NoFuseTypes ns) -> do
+            names <- resolveTHNames ns
             return $ delListFromUFM anns names
 
 -- | Build the "isInteresting" predicate and the exclusion list for a given
@@ -837,9 +849,9 @@ showInfo parent dflags reportMode failIt
                         $ map (showDetails dflags reportMode) annotated
         when failIt $ error "failing"
 
--- | If the given top level bind's own binder carries one or more 'InspectTypes'
--- annotations, print a report of interesting types case-matched or
--- constructed anywhere in its RHS, per each annotation's rules. No-op if
+-- | If the given top level bind's own binder carries an 'InspectTypes'
+-- annotation, print a report of interesting types case-matched or
+-- constructed anywhere in its RHS, per the annotation's rules. No-op if
 -- the binder is not annotated, or if the binding has no offending types.
 --
 -- The output honours the module-wide verbosity: at the default (or
@@ -851,7 +863,7 @@ reportInspected
 reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
     case Map.lookup (getOccString (GET_NAME b)) inspectAnns of
         Nothing -> return ()
-        Just ispecs -> mapM_ go ispecs
+        Just ispec -> go ispec
   where
     go ispec = do
         (isInteresting, exclusion) <- inspectPredicate anns ispec
@@ -945,10 +957,10 @@ inspectClassPredicate (PermitTypeClasses thAllow) = do
     allowed <- resolveTHNames thAllow
     return (\n -> n `notElem` allowed)
 
--- | If the given top level bind's own binder carries one or more
--- 'InspectTypeClasses' annotations, print a report of the type classes present
--- in its Core that the directive flags as forbidden. No-op if the binder is
--- not annotated, or if no offending class is present.
+-- | If the given top level bind's own binder carries an 'InspectTypeClasses'
+-- annotation, print a report of the type classes present in its Core that the
+-- directive flags as forbidden. No-op if the binder is not annotated, or if no
+-- offending class is present.
 reportInspectedClasses
     :: DynFlags
     -> ReportMode
@@ -958,7 +970,7 @@ reportInspectedClasses
 reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
     case Map.lookup (getOccString (GET_NAME b)) classAnns of
         Nothing -> return ()
-        Just ispecs -> mapM_ go ispecs
+        Just ispec -> go ispec
   where
     go ispec = do
         isInteresting <- inspectClassPredicate ispec
@@ -986,7 +998,7 @@ reportCoreSize
 reportCoreSize dflags reportMode sizeAnns (NonRec b rhs) =
     case Map.lookup (getOccString (GET_NAME b)) sizeAnns of
         Nothing -> return ()
-        Just anns -> mapM_ go anns
+        Just ann -> go ann
   where
     stats = exprStats rhs
     terms = cs_tm stats
@@ -1065,8 +1077,10 @@ markInline pass reportMode failIt transform guts = do
     putMsgS $ "fusion-plugin: Checking bindings to inline..."
     dflags <- getDynFlags
     anns <- FMAP_SND getAnnotations deserializeWithData guts
-    let fuseTypesAnns = getAnnotationsByStableName deserializeWithData guts
-    let noFuseTypesAnns = getAnnotationsByStableName deserializeWithData guts
+    fuseTypesAnns <-
+        getAnnotationsByStableName "FuseTypes" deserializeWithData guts
+    noFuseTypesAnns <-
+        getAnnotationsByStableName "NoFuseTypes" deserializeWithData guts
     if (anyUFM (any (== Fuse)) anns || not (Map.null fuseTypesAnns))
     then do
         r <- bindsOnlyPass
@@ -1224,23 +1238,24 @@ liveTopLevelBinders guts = go initial initial
 -- also processed.
 fusionReport :: String -> ReportMode -> Bool -> ModGuts -> CoreM ModGuts
 fusionReport mesg reportMode runInspect guts = do
-    let inspectAnns =
-            if runInspect
-            then getAnnotationsByStableName deserializeWithData guts
-            else Map.empty
-        sizeAnns =
-            if runInspect
-            then getAnnotationsByStableName deserializeWithData guts
-            else Map.empty
-        dumpAnns =
-            if runInspect
-            then getAnnotationsByStableName deserializeWithData guts
-            else Map.empty
-        classAnns =
-            if runInspect
-            then getAnnotationsByStableName deserializeWithData guts
-            else Map.empty
-        anyInspect = runInspect && not (Map.null inspectAnns)
+    inspectAnns <-
+        if runInspect
+        then getAnnotationsByStableName "InspectTypes" deserializeWithData guts
+        else return Map.empty
+    sizeAnns <-
+        if runInspect
+        then getAnnotationsByStableName "MaxCoreSize" deserializeWithData guts
+        else return Map.empty
+    dumpAnns <-
+        if runInspect
+        then getAnnotationsByStableName "DumpCore" deserializeWithData guts
+        else return Map.empty
+    classAnns <-
+        if runInspect
+        then getAnnotationsByStableName
+                 "InspectTypeClasses" deserializeWithData guts
+        else return Map.empty
+    let anyInspect = runInspect && not (Map.null inspectAnns)
         anyInspectClasses = runInspect && not (Map.null classAnns)
         anyMaxCoreSize = runInspect && not (Map.null sizeAnns)
         anyDumpCore = runInspect && not (Map.null dumpAnns)
