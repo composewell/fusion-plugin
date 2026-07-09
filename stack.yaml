@@ -1,3 +1,6 @@
 resolver: lts-24.36
 packages:
 - '.'
+extra-deps:
+  - git: https://github.com/composewell/fusion-plugin-types.git
+    commit: d4fa57623450ba4a43f08ebd7cfbfc2745035375
