@@ -98,6 +98,7 @@ jobs:
       CABAL_OPTIONS: >-
         CABAL_REINIT_CONFIG=y
         CABAL_CHECK_RELAX=y
+        CABAL_PROJECT=cabal.project
 
       MATRIX_OPTIONS: ${{ matrix.pack_options }}
 

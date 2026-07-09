@@ -42,7 +42,7 @@ environment:
     # cabal options
     # ------------------------------------------------------------------------
     CABAL_CHECK_RELAX: "y"
-    #CABAL_PROJECT: "cabal.project"
+    CABAL_PROJECT: "cabal.project"
 
     # ------------------------------------------------------------------------
     # Location of packcheck.sh (the shell script invoked to perform CI tests ).

@@ -2,6 +2,7 @@
 .github/workflows/haskell.yml
 .gitignore
 appveyor.yml
+cabal.project
 cabal.project.ghc-head
 flake.lock
 flake.nix
