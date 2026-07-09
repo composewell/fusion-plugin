@@ -128,14 +128,14 @@ import GhcPlugins
 
 -- Core size reporting
 #if MIN_VERSION_ghc(9,0,0)
-import GHC.Core.Stats (exprStats)
+import GHC.Core.Stats (exprStats, CoreStats(cs_tm))
 #else
-import CoreStats (exprStats)
+import CoreStats (exprStats, CoreStats(cs_tm))
 #endif
 
 -- Imports from fusion-plugin-types
 import Fusion.Plugin.Types
-    ( Fuse(..), FuseTypes(..), NoFuseTypes(..), Inspect(..), ShowCoreSize(..)
+    ( Fuse(..), FuseTypes(..), NoFuseTypes(..), Inspect(..), MaxCoreSize(..)
     , DumpCore(..)
     )
 
@@ -367,7 +367,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #define INSPECT_FM Map.Map String [Inspect]
 #define FUSE_TYPES_FM Map.Map String [FuseTypes]
 #define NO_FUSE_TYPES_FM Map.Map String [NoFuseTypes]
-#define SHOW_CORE_SIZE_FM Map.Map String [ShowCoreSize]
+#define MAX_CORE_SIZE_FM Map.Map String [MaxCoreSize]
 #define DUMP_CORE_FM Map.Map String [DumpCore]
 
 hasInlineBinder :: CoreBndr -> Bool
@@ -885,16 +885,32 @@ reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
 reportInspected _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
 
-reportCoreSize :: DynFlags -> SHOW_CORE_SIZE_FM -> CoreBind -> CoreM ()
-reportCoreSize dflags sizeAnns (NonRec b rhs) =
+reportCoreSize
+    :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM -> CoreBind -> CoreM ()
+reportCoreSize dflags reportMode sizeAnns (NonRec b rhs) =
     case Map.lookup (getOccString (GET_NAME b)) sizeAnns of
         Nothing -> return ()
-        Just _ ->
-            putMsgS $ "fusion-plugin: Core size of "
+        Just anns -> mapM_ go anns
+  where
+    stats = exprStats rhs
+    terms = cs_tm stats
+
+    go (MaxCoreSize maxSize) = do
+        case reportMode of
+            ReportSilent -> return ()
+            ReportWarn -> return ()
+            _ ->
+                putMsgS $ "fusion-plugin: Core size of "
+                        ++ showWithUnique dflags b
+                        ++ ": "
+                        ++ showSDoc dflags (ppr stats)
+        when (terms > maxSize) $
+            putMsgS $ "fusion-plugin: core size of "
                     ++ showWithUnique dflags b
-                    ++ ": "
-                    ++ showSDoc dflags (ppr (exprStats rhs))
-reportCoreSize _ _ (Rec _) =
+                    ++ " (" ++ show terms
+                    ++ " terms) exceeds the specified size ("
+                    ++ show maxSize ++ " terms)."
+reportCoreSize _ _ _ (Rec _) =
     error "reportCoreSize: expecting only NonRec binders"
 
 -- | Split a string on @\'-\'@ characters.
@@ -1125,9 +1141,9 @@ fusionReport mesg reportMode runInspect guts = do
             then getAnnotationsByStableName deserializeWithData guts
             else Map.empty
         anyInspect = runInspect && not (Map.null inspectAnns)
-        anyShowCoreSize = runInspect && not (Map.null sizeAnns)
+        anyMaxCoreSize = runInspect && not (Map.null sizeAnns)
         anyDumpCore = runInspect && not (Map.null dumpAnns)
-        anyReport = anyInspect || anyShowCoreSize || anyDumpCore
+        anyReport = anyInspect || anyMaxCoreSize || anyDumpCore
     case reportMode of
         ReportSilent | not anyReport -> return guts
         _ -> do
@@ -1149,13 +1165,13 @@ fusionReport mesg reportMode runInspect guts = do
     where
 
     transformBind
-        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> SHOW_CORE_SIZE_FM -> DUMP_CORE_FM
+        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
         -> String -> String -> VarSet
         -> CoreBind -> CoreM ()
     transformBind dflags anns inspectAnns sizeAnns dumpAnns pkgName modName
             liveBndrs bind@(NonRec b _) = do
         when runInspect $ reportInspected dflags reportMode anns inspectAnns bind
-        when runInspect $ reportCoreSize dflags sizeAnns bind
+        when runInspect $ reportCoreSize dflags reportMode sizeAnns bind
         when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
         when (b `elemVarSet` liveBndrs) $ do
             let results = filterNonAllocating
