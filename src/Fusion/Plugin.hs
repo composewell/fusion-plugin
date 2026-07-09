@@ -135,7 +135,7 @@ import CoreStats (exprStats, CoreStats(cs_tm))
 
 -- Imports from fusion-plugin-types
 import Fusion.Plugin.Types
-    ( Fuse(..), FuseTypes(..), NoFuseTypes(..), Inspect(..), MaxCoreSize(..)
+    ( Fuse(..), FuseTypes(..), NoFuseTypes(..), InspectTypes(..), MaxCoreSize(..)
     , DumpCore(..)
     )
 
@@ -364,7 +364,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 -- Keyed by 'OccName' string rather than by 'Name'/'Unique'. A top-level Id's
 -- Unique -- and even its 'NameSort' -- is not guaranteed to survive the
 -- Core-to-core passes while OccName stays the same.
-#define INSPECT_FM Map.Map String [Inspect]
+#define INSPECT_FM Map.Map String [InspectTypes]
 #define FUSE_TYPES_FM Map.Map String [FuseTypes]
 #define NO_FUSE_TYPES_FM Map.Map String [NoFuseTypes]
 #define MAX_CORE_SIZE_FM Map.Map String [MaxCoreSize]
@@ -650,7 +650,7 @@ isNonAllocatingTyCon tycon =
 -- a bare reference to something of function type (e.g. a primop like
 -- \"+#\", or a specialized worker) which is not a data construction at
 -- all. Applied unconditionally, regardless of which types the active
--- 'Inspect' predicate flags as \"interesting\" -- these are never useful
+-- 'InspectTypes' predicate flags as \"interesting\" -- these are never useful
 -- signal for a boxing/fusion report.
 isAllocating :: Context -> Bool
 isAllocating (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
@@ -710,16 +710,16 @@ removeFuseTypes anns noFuseTypesAnns b =
             return $ delListFromUFM anns names
 
 -- | Build the "isInteresting" predicate and the exclusion list for a given
--- 'Inspect' directive.
-inspectPredicate :: UNIQ_FM -> Inspect -> CoreM (Name -> Bool, [Name])
-inspectPredicate _ (AllowAllExcept thNames) = do
+-- 'InspectTypes' directive.
+inspectPredicate :: UNIQ_FM -> InspectTypes -> CoreM (Name -> Bool, [Name])
+inspectPredicate _ (ForbidTypes thNames) = do
     names <- resolveTHNames thNames
     return (\n -> n `elem` names, [])
-inspectPredicate anns (FusionForbidAllow thForbid thAllow) = do
+inspectPredicate anns (ForbidFused thForbid thAllow) = do
     forbidden <- resolveTHNames thForbid
     allowed <- resolveTHNames thAllow
     return (\n -> isJust (lookupUFM anns n) || n `elem` forbidden, allowed)
-inspectPredicate _ (ForbidAllExcept thAllow) = do
+inspectPredicate _ (PermitTypes thAllow) = do
     allowed <- resolveTHNames thAllow
     return (const True, allowed)
 
@@ -787,15 +787,15 @@ showDetailsConstr dflags reportMode (binds, con) =
 instance Outputable Fuse where
     ppr _ = text "Fuse"
 
--- Orphan instance for 'Inspect', used only to print a banner naming the
+-- Orphan instance for 'InspectTypes', used only to print a banner naming the
 -- directive that triggered a focused report; TH 'TH.Name's are shown via
 -- their derived 'Show' instance rather than GHC's 'Outputable' (which has
 -- no instance for 'TH.Name').
-instance Outputable Inspect where
-    ppr (AllowAllExcept names) = text "AllowAllExcept" <+> text (show names)
-    ppr (FusionForbidAllow f a) =
-        text "FusionForbidAllow" <+> text (show f) <+> text (show a)
-    ppr (ForbidAllExcept names) = text "ForbidAllExcept" <+> text (show names)
+instance Outputable InspectTypes where
+    ppr (ForbidTypes names) = text "ForbidTypes" <+> text (show names)
+    ppr (ForbidFused f a) =
+        text "ForbidFused" <+> text (show f) <+> text (show a)
+    ppr (PermitTypes names) = text "PermitTypes" <+> text (show names)
 
 showInfo
     :: CoreBndr
@@ -827,7 +827,7 @@ showInfo parent dflags reportMode failIt
                         $ map (showDetails dflags reportMode) annotated
         when failIt $ error "failing"
 
--- | If the given top level bind's own binder carries one or more 'Inspect'
+-- | If the given top level bind's own binder carries one or more 'InspectTypes'
 -- annotations, print a report of interesting types case-matched or
 -- constructed anywhere in its RHS, per each annotation's rules. No-op if
 -- the binder is not annotated, or if the binding has no offending types.
@@ -1124,7 +1124,7 @@ liveTopLevelBinders guts = go initial initial
                 newFrontier = next `minusVarSet` visited
             in go newFrontier newVisited
 
--- | @runInspect@ controls whether the per-binding 'Inspect' annotations are
+-- | @runInspect@ controls whether the per-binding 'InspectTypes' annotations are
 -- also processed.
 fusionReport :: String -> ReportMode -> Bool -> ModGuts -> CoreM ModGuts
 fusionReport mesg reportMode runInspect guts = do

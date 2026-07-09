@@ -128,40 +128,40 @@ levels `2`, `3`, `4` can be used for more verbose output.
 ### Reporting Programmer Annotated Binders
 
 The `verbose=N` report above covers the whole module. To check a single
-binding instead, annotate it with `Inspect` from `Fusion.Plugin.Types`
+binding instead, annotate it with `InspectTypes` from `Fusion.Plugin.Types`
 (from the `fusion-plugin-types` package). This works regardless of
-`verbose=N` -- an `Inspect` annotated binding is always reported, even when
+`verbose=N` -- an `InspectTypes` annotated binding is always reported, even when
 the plugin is otherwise silent:
 
 ```haskell
 {-# LANGUAGE TemplateHaskellQuotes #-}
 
-import Fusion.Plugin.Types (Inspect(..))
+import Fusion.Plugin.Types (InspectTypes(..))
 
--- FusionForbidAllow: Fuse-annotated types are forbidden by default, with an
+-- ForbidFused: Fuse-annotated types are forbidden by default, with an
 -- extra forbid-list and an overriding allow-list.
 
 -- Just enforce the baseline: nothing Fuse-annotated may survive to core.
-{-# ANN function1 (FusionForbidAllow [] []) #-}
+{-# ANN function1 (ForbidFused [] []) #-}
 function1 :: ...
 
--- Also forbid Text even though it isn't Fuse-annotated.
-{-# ANN function1a (FusionForbidAllow [''Text] []) #-}
+-- Also forbid Maybe even though it isn't Fuse-annotated.
+{-# ANN function1a (ForbidFused [''Maybe] []) #-}
 function1a :: ...
 
--- Forbid Text, but explicitly allow ByteString even if it's Fuse-annotated
--- or would otherwise be caught.
-{-# ANN function1b (FusionForbidAllow [''Text] [''ByteString]) #-}
+-- Forbid Maybe, but explicitly allow Step even though it's Fuse-annotated
+-- we allow it to be present in this binding.
+{-# ANN function1b (ForbidFused [''Maybe] [''Step]) #-}
 function1b :: ...
 
--- AllowAllExcept: blocklist -- only the named types are disallowed, everything
+-- ForbidTypes: blocklist -- only the named types are disallowed, everything
 -- else in core is fine.
-{-# ANN function2 (AllowAllExcept [''SomeType]) #-}
+{-# ANN function2 (ForbidTypes [''Step]) #-}
 function2 :: ...
 
--- ForbidAllExcept: allowlist -- only the named types may appear, everything
+-- PermitTypes: allowlist -- only the named types may appear, everything
 -- else in core fails the check.
-{-# ANN function3 (ForbidAllExcept [''Int, ''IO]) #-}
+{-# ANN function3 (PermitTypes [''Int, ''IO]) #-}
 function3 :: ...
 ```
 
