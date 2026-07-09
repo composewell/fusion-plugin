@@ -889,14 +889,15 @@ reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
 
     terse results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
-        in putMsgS $ "fusion-plugin: found forbidden types in "
+        in putMsgS $ "fusion-plugin: "
                    ++ getOccString (GET_NAME b)
-                   ++ ": [" ++ DL.intercalate ", " names ++ "]"
+                   ++ ": found forbidden types ["
+                   ++ DL.intercalate ", " names ++ "]"
 
     detailed ispec results = do
-        putMsgS $ "fusion-plugin: Inspecting "
+        putMsgS $ "fusion-plugin: "
                 ++ showWithUnique dflags b
-                ++ " (" ++ showSDoc dflags (ppr ispec) ++ ")..."
+                ++ ": inspecting (" ++ showSDoc dflags (ppr ispec) ++ ")..."
         let getAlts x =
                 case x of
                     (bs, CaseAlt alt) -> Just (bs, alt)
@@ -997,17 +998,18 @@ reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
                 ReportSilent -> report ispec hits
                 ReportWarn -> report ispec hits
                 _ -> do
-                    putMsgS $ "fusion-plugin: Inspecting "
+                    putMsgS $ "fusion-plugin: "
                             ++ showWithUnique dflags b
-                            ++ " (" ++ showSDoc dflags (ppr ispec) ++ ")..."
+                            ++ ": inspecting (" ++ showSDoc dflags (ppr ispec) ++ ")..."
                     report ispec hits
             return 1
 
     report _ hits =
         let names = DL.nub (map qualifiedTyConName hits)
-        in putMsgS $ "fusion-plugin: found forbidden type classes in "
+        in putMsgS $ "fusion-plugin: "
                    ++ getOccString (GET_NAME b)
-                   ++ ": [" ++ DL.intercalate ", " names ++ "]"
+                   ++ ": found forbidden type classes ["
+                   ++ DL.intercalate ", " names ++ "]"
 reportInspectedClasses _ _ _ (Rec _) =
     error "reportInspectedClasses: expecting only NonRec binders"
 
@@ -1027,15 +1029,15 @@ reportCoreSize dflags reportMode sizeAnns (NonRec b rhs) =
             ReportSilent -> return ()
             ReportWarn -> return ()
             _ ->
-                putMsgS $ "fusion-plugin: Core size of "
+                putMsgS $ "fusion-plugin: "
                         ++ showWithUnique dflags b
-                        ++ ": "
+                        ++ ": core size "
                         ++ showSDoc dflags (ppr stats)
         if terms > maxSize
         then do
-            putMsgS $ "fusion-plugin: core size of "
+            putMsgS $ "fusion-plugin: "
                     ++ showWithUnique dflags b
-                    ++ " (" ++ show terms
+                    ++ ": core size (" ++ show terms
                     ++ " terms) exceeds the specified size ("
                     ++ show maxSize ++ " terms)."
             return 1
@@ -1089,8 +1091,8 @@ reportDumpCore dflags pkgName modName dumpAnns bind@(NonRec b _) =
             liftIO $ do
                 createDirectoryIfMissing True dir
                 writeFile path (showSDoc dflags (ppr bind) ++ "\n")
-            putMsgS $ "fusion-plugin: Dumped core of "
-                    ++ showWithUnique dflags b ++ " to " ++ path
+            putMsgS $ "fusion-plugin: "
+                    ++ showWithUnique dflags b ++ ": dumped core to " ++ path
 reportDumpCore _ _ _ _ (Rec _) =
     error "reportDumpCore: expecting only NonRec binders"
 

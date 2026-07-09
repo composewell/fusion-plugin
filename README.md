@@ -111,7 +111,7 @@ myFunction :: ...
 This prints a line such as:
 
 ```
-fusion-plugin: Core size of myFunction: {terms: 8, types: 3, coercions: 0, joins: 0/0}
+fusion-plugin: myFunction: core size {terms: 8, types: 3, coercions: 0, joins: 0/0}
 ```
 
 ### Plugin options
