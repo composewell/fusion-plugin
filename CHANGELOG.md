@@ -1,12 +1,14 @@
 ## Unreleased
 
-* Add a `FuseTypes` annotation to mark types as fusible for inlining within a
-  single binding only (requires fusion-plugin-types with `FuseTypes`)
-* Add a `NoFuseTypes` annotation to locally override `Fuse` for a
-  binding, disabling the forced inlining due to Fuse for that binding
-  only.
-* Add a `ShowCoreSize` annotation to report the size of the optimized Core
-  of a binding (requires fusion-plugin-types with `ShowCoreSize`)
+* Add the following annotations:
+  * `FuseTypes`: mark types fusible within a specific binding.
+  * `NoFuseTypes`: disable `Fuse` annotation within a specific binding.
+  * `InspectTypes`: Forbid or permit existence of given types within a
+    binding.
+  * `InspectTypeClasses`: Forbid or permit existence of given type
+    classes within a binding.
+  * `MaxCoreSize`: report the size of the optimized Core of a binding.
+  * `DumpCore`: write the core of a specific binding to a file.
 
 ## 0.2.8
 

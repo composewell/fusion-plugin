@@ -40,17 +40,31 @@ through the relevant bindings and if one of these types are found
 inside a binding then that binding is marked to be inlined
 irrespective of the size.
 
-## Using the plugin
-
 This plugin was primarily motivated by
 [streamly](https://github.com/composewell/streamly) but it can be used in
 general.
 
-To use this plugin, add this package to your `build-depends`
-and pass the following to your ghc-options:
-`ghc-options: -O2 -fplugin=Fusion.Plugin`
+## Using the plugin
 
-### Per-binding fusion with `FuseTypes`
+There are two different stages where the plugin functionality is used, (1) when
+writing code for fusion we annotate data types or bindings using annotations
+imported from the `fusion-plugin-types` packages, (2) when compiling the code
+we use the `fusion-plugin` package as a compiler plugin to make those
+annotations work towards fusing the code better.
+
+## Annotations to Enable Fusion
+
+See the `fusion-plugin-types` package for detailed reference on available
+annotations.
+
+### Enabling Fusion of a Data Type
+
+Library authors annotate the data types used in the intermediate states of
+stream pipelines using the `Fuse` annotation. All the functions where these
+data types appear are liable to be force inlined by the plugin to make the
+types fuse.
+
+### Enabling Fusion within a Function
 
 `Fuse` marks a type as fusible everywhere it is used. Sometimes a type should
 drive fusion only inside one particular function and must not force inlining
@@ -73,7 +87,7 @@ renamed type is a compile error rather than a silently-ignored annotation.
 Using `''Foo` requires `{-# LANGUAGE TemplateHaskellQuotes #-}` (or the heavier
 `TemplateHaskell`) in the annotated module.
 
-### Per-binding override with `NoFuseTypes`
+### Disabling Fusion within a Function
 
 `NoFuseTypes` is the inverse of `Fuse`/`FuseTypes`. Sometimes a type should
 drive fusion in general (via a module-wide `Fuse` annotation) but must *not*
@@ -92,27 +106,120 @@ import Fusion.Plugin.Types (NoFuseTypes(..))
 myFunction :: ...
 ```
 
-### Reporting Core size with `ShowCoreSize`
+## Annotations to Verify Fusion
 
-To find out how big the optimized Core of a particular binding is, annotate
-that *binding* with `ShowCoreSize` from `Fusion.Plugin.Types`. After all
-fusion-plugin passes have run, the plugin prints the Core size of that
-binding, regardless of the module-wide `-fplugin-opt=...:verbose=N` flag. An
-unexpected blow-up in size is often a symptom of failed fusion or runaway
-inlining:
+### Inspecting Types within a Function
+
+To verify elimination of certain types within a function annotate the
+function with `InspectTypes`. If a violation is found the plugin will complain
+providing details of the violation. When `werror` plugin options is used it
+will fail the compilation on violation.
 
 ```haskell
-import Fusion.Plugin.Types (ShowCoreSize(..))
+{-# LANGUAGE TemplateHaskellQuotes #-}
 
-{-# ANN myFunction ShowCoreSize #-}
+import Fusion.Plugin.Types (InspectTypes(..))
+```
+
+Complain if any `Fuse` annotated type is found in the function.
+```haskell
+{-# ANN function1 (ForbidFused [] []) #-}
+function1 :: ...
+```
+
+Also forbid `Maybe` as well even though it isn't Fuse-annotated.
+```haskell
+{-# ANN function1a (ForbidFused [''Maybe] []) #-}
+function1a :: ...
+```
+
+Disallow `Maybe`, but explicitly allow `Step` even though it is Fuse-annotated
+we allow it to be present in this binding.
+```haskell
+{-# ANN function1b (ForbidFused [''Maybe] [''Step]) #-}
+function1b :: ...
+```
+
+Disallow the specified types and allow the rest, irrespective of `Fuse`
+annotation.
+```haskell
+{-# ANN function2 (ForbidTypes [''Step]) #-}
+function2 :: ...
+```
+
+Allow only the specified types and disallow all others.
+```haskell
+{-# ANN function3 (PermitTypes [''Int, ''IO]) #-}
+function3 :: ...
+```
+
+To show all boxed types used within a function:
+```haskell
+{-# ANN function4 (PermitTypes []) #-}
+function4 :: ...
+```
+
+### Inspecting type class dictionaries
+
+To check the presence or absence of type classes in the Core of a binding,
+annotate it with `InspectTypeClasses`. A type class appears in Core as a
+dictionary argument; a class that survives to Core usually means a dictionary
+that failed to specialize away.
+
+```haskell
+{-# LANGUAGE TemplateHaskellQuotes #-}
+
+import Fusion.Plugin.Types (InspectTypeClasses(..))
+```
+
+'Num' should not appear in the core.
+```haskell
+{-# ANN function1 (ForbidTypeClasses [''Num]) #-}
+function1 :: ...
+```
+
+'Ord' and 'Eq' can appear but no other type class can be present.
+```haskell
+{-# ANN function2 (PermitTypeClasses [''Ord, ''Eq]) #-}
+function2 :: ...
+```
+
+### Inspecting Core Size of a Function
+
+Sometimes the Core blows up due to aggressive inlining and SpecConstr
+optimizations. To guard against or detect such issues we can use the
+`MaxCoreSize` as a core size ratchet for a function.
+
+```haskell
+import Fusion.Plugin.Types (MaxCoreSize(..))
+
+{-# ANN myFunction (MaxCoreSize 1000) #-}
 myFunction :: ...
 ```
 
 This prints a line such as:
+```
+fusion-plugin: myFunction: core size (1361 terms) exceeds the specified size (1000 terms).
+```
 
+### Generating Core of a Function
+
+Use `DumpCore` annotation to write the final simplified core of a function to a
+file under `fusion-plugin-output` directory:
+```haskell
+{-# ANN myFunction DumpCore #-}
+myFunction :: ...
 ```
-fusion-plugin: myFunction: core size {terms: 8, types: 3, coercions: 0, joins: 0/0}
-```
+
+You can examine the core to find the reported violations.
+
+### Compilation
+
+To make the fusion annotations do the actual work you need to compile
+your code with the fusion-plugin added to GHC during compilation. To do
+that add this package to the `build-depends` in the cabal file of the
+package to be compiled and use the following ghc options:
+`ghc-options: -O2 -fplugin=Fusion.Plugin`
 
 ### Plugin options
 
@@ -127,71 +234,6 @@ levels `2`, `3`, `4` can be used for more verbose output.
 
 `-fplugin-opt=Fusion.Plugin:werror`: treat annotation-check violations as
 errors instead of warnings.
-
-### Reporting Programmer Annotated Binders
-
-The `verbose=N` report above covers the whole module. To check a single
-binding instead, annotate it with `InspectTypes` from `Fusion.Plugin.Types`
-(from the `fusion-plugin-types` package). This works regardless of
-`verbose=N` -- an `InspectTypes` annotated binding is always reported, even when
-the plugin is otherwise silent:
-
-```haskell
-{-# LANGUAGE TemplateHaskellQuotes #-}
-
-import Fusion.Plugin.Types (InspectTypes(..))
-
--- ForbidFused: Fuse-annotated types are forbidden by default, with an
--- extra forbid-list and an overriding allow-list.
-
--- Just enforce the baseline: nothing Fuse-annotated may survive to core.
-{-# ANN function1 (ForbidFused [] []) #-}
-function1 :: ...
-
--- Also forbid Maybe even though it isn't Fuse-annotated.
-{-# ANN function1a (ForbidFused [''Maybe] []) #-}
-function1a :: ...
-
--- Forbid Maybe, but explicitly allow Step even though it's Fuse-annotated
--- we allow it to be present in this binding.
-{-# ANN function1b (ForbidFused [''Maybe] [''Step]) #-}
-function1b :: ...
-
--- ForbidTypes: blocklist -- only the named types are disallowed, everything
--- else in core is fine.
-{-# ANN function2 (ForbidTypes [''Step]) #-}
-function2 :: ...
-
--- PermitTypes: allowlist -- only the named types may appear, everything
--- else in core fails the check.
-{-# ANN function3 (PermitTypes [''Int, ''IO]) #-}
-function3 :: ...
-```
-
-Type references are TH `Name`s (`''SomeType`), so a typo or a stale
-reference to a renamed type is a compile error, not a silently-stale check.
-
-### Checking type classes with `InspectTypeClasses`
-
-To check the presence or absence of type classes in the Core of a binding,
-annotate it with `InspectTypeClasses`. A type class appears in Core as a
-dictionary argument; a class that survives to Core usually means a dictionary
-that failed to specialize away. Like `InspectTypes`, an annotated binding is
-always reported regardless of `verbose=N`:
-
-```haskell
-{-# LANGUAGE TemplateHaskellQuotes #-}
-
-import Fusion.Plugin.Types (InspectTypeClasses(..))
-
--- 'Num' should not appear in the core.
-{-# ANN function1 (ForbidTypeClasses [''Num]) #-}
-function1 :: ...
-
--- 'Ord' and 'Eq' can appear but no other type class can be present.
-{-# ANN function2 (PermitTypeClasses [''Ord, ''Eq]) #-}
-function2 :: ...
-```
 
 ## See also
 

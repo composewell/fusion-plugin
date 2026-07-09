@@ -54,20 +54,18 @@ where
 import Control.Monad (mzero, when)
 import Control.Monad.Trans.Maybe (MaybeT(..))
 import Control.Monad.Trans.State (StateT, evalStateT, get, put)
+import Data.Char (isDigit)
 import Data.Data (Data)
 import Data.Maybe (catMaybes, isJust, mapMaybe)
 import Data.Word (Word8)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
 import Debug.Trace (trace)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>))
 import qualified Data.List as DL
 import qualified Data.Map.Strict as Map
 import qualified Language.Haskell.TH.Syntax as TH
-
--- DumpCore annotation related imports (available on all supported GHC versions)
-import Data.Char (isDigit)
-import System.Directory (createDirectoryIfMissing)
-import System.FilePath ((</>))
 
 -- Imports for specific compiler versions
 #if MIN_VERSION_ghc(9,6,0)
@@ -126,8 +124,6 @@ import qualified GHC.Plugins as GhcPlugins
 import GhcPlugins
 #endif
 
--- throwGhcExceptionIO/ProgramError are re-exported by GHC(.)Plugins on 9.2+ but
--- not on 8.10 or 9.0, so import them explicitly there.
 #if MIN_VERSION_ghc(9,0,0) && !MIN_VERSION_ghc(9,2,0)
 import GHC.Utils.Panic (throwGhcExceptionIO, GhcException(ProgramError))
 #elif !MIN_VERSION_ghc(9,0,0)
@@ -141,18 +137,18 @@ import GHC.Core.Stats (exprStats, CoreStats(cs_tm))
 import CoreStats (exprStats, CoreStats(cs_tm))
 #endif
 
--- Imports from fusion-plugin-types
 import Fusion.Plugin.Types
-    ( Fuse(..), FuseTypes(..), NoFuseTypes(..), InspectTypes(..)
-    , InspectTypeClasses(..), MaxCoreSize(..)
-    , DumpCore(..)
-    )
 
 -- $using
 --
 -- This plugin was primarily motivated by fusion issues discovered in
 -- [streamly](https://github.com/composewell/streamly) but it can be used in
 -- general.
+--
+-- You need to annotate your code to enable fusion or to report details about
+-- fused types in a function. See the documentation of the
+-- `fusion-plugin-types` package for available annotations. Also see the
+-- `README` in this package for a guide to use the annotations and this plugin.
 --
 -- To use this plugin, add this package to your @build-depends@
 -- and pass the following to your ghc-options:
@@ -161,7 +157,20 @@ import Fusion.Plugin.Types
 -- ghc-options: -O2 -fplugin=Fusion.Plugin
 -- @
 --
--- The following currently works only for GHC versions less than 9.0.
+-- GHC option to treat annotation-check violations as errors instead of
+-- warnings:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:werror
+-- @
+--
+-- GHC option to show more details about the checks and violations:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:verbose=1
+-- @
+--
+-- Verbosity levels @2@, @3@, @4@ can be used for more verbose output.
 --
 -- To dump the core after each core to core transformation, pass the
 -- following to your ghc-options:
@@ -171,15 +180,7 @@ import Fusion.Plugin.Types
 -- @
 -- Output from each transformation is then printed in a different file.
 --
--- 'Fuse' marks a type as fusible everywhere it is used. To make a type act as
--- fusible only while inlining inside one specific binding (and nowhere else),
--- annotate that binding with 'Fusion.Plugin.Types.FuseTypes' instead:
---
--- @
--- {-\# LANGUAGE TemplateHaskellQuotes #-}
---
--- {-\# ANN myFunction (FuseTypes [''Step]) #-}
--- @
+-- Note: @dump-core@ does not work for GHC-9.0.x, 9.6.x and 9.8.x.
 
 -- $impl
 --
@@ -374,8 +375,6 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #else
 #define IS_ACTIVE isActiveIn 0
 #define UNIQ_FM UniqFM [Fuse]
--- getName (rather than getUnique) so it works as both a UniqFM key and a
--- 'Name' for the report/inspect code; a TyCon shares its Unique with its Name.
 #define GET_NAME getName
 #define FMAP_SND
 #endif
