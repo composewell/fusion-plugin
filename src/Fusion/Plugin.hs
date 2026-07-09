@@ -126,6 +126,12 @@ import qualified GHC.Plugins as GhcPlugins
 import GhcPlugins
 #endif
 
+-- throwGhcExceptionIO/ProgramError are re-exported by GHC.Plugins on 9.2+ but
+-- not on 9.0, so import them explicitly there.
+#if MIN_VERSION_ghc(9,0,0) && !MIN_VERSION_ghc(9,2,0)
+import GHC.Utils.Panic (throwGhcExceptionIO, GhcException(ProgramError))
+#endif
+
 -- Core size reporting
 #if MIN_VERSION_ghc(9,0,0)
 import GHC.Core.Stats (exprStats, CoreStats(cs_tm))
