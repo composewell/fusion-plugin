@@ -861,6 +861,83 @@ showInfo parent dflags reportMode
                         $ DL.nub
                         $ map (showDetails dflags reportMode) annotated
 
+-- | Look up a per-binder annotation, accounting for worker/wrapper splitting.
+--
+-- The annotations are keyed by the source-level binder name (e.g. @f@). The
+-- strictness analyser, however, may split an annotated function @f@ into a
+-- worker @$wf@ and a wrapper @f@; when @f@ is not exported the wrapper is
+-- frequently inlined away at its (single) call site, leaving only @$wf@ in the
+-- final Core. In that case the binder's occurrence name (@$wf@) would not be
+-- found in the annotation map. So if the direct lookup fails and the binder is
+-- a @$w@ worker, retry with the prefix stripped.
+lookupBinderAnn :: CoreBndr -> Map.Map String a -> Maybe a
+lookupBinderAnn b m =
+    case Map.lookup nm m of
+        found@(Just _) -> found
+        Nothing ->
+            case DL.stripPrefix "$w" nm of
+                Just base -> Map.lookup base m
+                Nothing -> Nothing
+
+    where
+
+    nm = getOccString (GET_NAME b)
+
+-------------------------------------------------------------------------------
+-- Transitive closure of a binding
+-------------------------------------------------------------------------------
+
+-- | All 'Var' occurrences appearing anywhere in an expression. Like
+-- 'classTyConsInBind' but collects term-level variable references instead of
+-- type constructors.
+exprVarOccs :: CoreExpr -> VarSet
+exprVarOccs = goE
+
+    where
+
+    goE (Var v) = unitVarSet v
+    goE (Lit _) = emptyUniqSet
+    goE (App e1 e2) = goE e1 `unionUniqSets` goE e2
+    goE (Lam _ e) = goE e
+    goE (Let b e) = goB b `unionUniqSets` goE e
+    goE (Case e _ _ alts) =
+        goE e `unionUniqSets` unionManyUniqSets (map goAlt alts)
+    goE (Cast e _) = goE e
+    goE (Tick _ e) = goE e
+    goE (Type _) = emptyUniqSet
+    goE (Coercion _) = emptyUniqSet
+
+    goAlt (ALT_CONSTR(_,_,e)) = goE e
+
+    goB (NonRec _ e) = goE e
+    goB (Rec bs) = unionManyUniqSets (map (goE . snd) bs)
+
+-- | Return the binder itself plus the transitive closure of all /other top
+-- level/ binders reachable from its RHS (following term-level references).
+--
+-- This reconstructs a whole function that the optimiser has scattered across
+-- several top level bindings (a wrapper referencing a @$w@ worker, a worker
+-- referencing a @$s$w@ specialisation, and so on). References to imported ids
+-- or local binders are ignored (only names in this module's @binds@ are
+-- followed).
+binderClosure :: [(CoreBndr, CoreExpr)] -> CoreBndr -> [(CoreBndr, CoreExpr)]
+binderClosure binds root = go [root] emptyVarSet []
+
+    where
+
+    topSet = mkVarSet (map fst binds)
+
+    go [] _ acc = acc
+    go (v : vs) seen acc
+        | v `elemVarSet` seen = go vs seen acc
+        | otherwise =
+            case lookup v binds of
+                Nothing -> go vs (extendVarSet seen v) acc
+                Just e ->
+                    let refs = nonDetEltsUniqSet
+                                   (intersectVarSet (exprVarOccs e) topSet)
+                    in go (refs ++ vs) (extendVarSet seen v) ((v, e) : acc)
+
 -- | If the given top level bind's own binder carries an 'InspectTypes'
 -- annotation, print a report of interesting types case-matched or
 -- constructed anywhere in its RHS, per the annotation's rules. No-op if
@@ -872,9 +949,10 @@ showInfo parent dflags reportMode
 -- @SCRUTINIZE@/@CONSTRUCT@ breakdown is printed.
 -- Returns 0 on no violations and 1 otherwise.
 reportInspected
-    :: DynFlags -> ReportMode -> UNIQ_FM -> INSPECT_FM -> CoreBind -> CoreM Int
-reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
-    case Map.lookup (getOccString (GET_NAME b)) inspectAnns of
+    :: DynFlags -> ReportMode -> UNIQ_FM -> INSPECT_FM
+    -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
+reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
+    case lookupBinderAnn b inspectAnns of
         Nothing -> return 0
         Just ispec -> go ispec
 
@@ -883,7 +961,11 @@ reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
     go ispec = do
         (isInteresting, exclusion) <- inspectPredicate anns ispec
         let results = filterNonAllocating
-                    $ filterExcluded exclusion (containsAnns dflags isInteresting bind)
+                    $ filterExcluded exclusion
+                    $ concatMap
+                        (\(v, e) ->
+                            containsAnns dflags isInteresting (NonRec v e))
+                        (binderClosure allBinds b)
         if null results
         then return 0
         else do
@@ -923,7 +1005,7 @@ reportInspected dflags reportMode anns inspectAnns bind@(NonRec b _) =
             uniqBinders patternMatches showDetailsCaseMatch
         showInfo b dflags reportMode "CONSTRUCT"
             uniqConstr constrs showDetailsConstr
-reportInspected _ _ _ _ (Rec _) =
+reportInspected _ _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
 
 -------------------------------------------------------------------------------
@@ -985,10 +1067,11 @@ reportInspectedClasses
     :: DynFlags
     -> ReportMode
     -> INSPECT_CLASSES_FM
+    -> [(CoreBndr, CoreExpr)]
     -> CoreBind
     -> CoreM Int
-reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
-    case Map.lookup (getOccString (GET_NAME b)) classAnns of
+reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
+    case lookupBinderAnn b classAnns of
         Nothing -> return 0
         Just ispec -> go ispec
 
@@ -996,7 +1079,10 @@ reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
 
     go ispec = do
         isInteresting <- inspectClassPredicate ispec
-        let hits = filter (isInteresting . getName) (classTyConsInBind bind)
+        let hits = filter (isInteresting . getName)
+                     $ concatMap
+                         (\(v, e) -> classTyConsInBind (NonRec v e))
+                         (binderClosure allBinds b)
         if null hits
         then return 0
         else do
@@ -1016,19 +1102,22 @@ reportInspectedClasses dflags reportMode classAnns bind@(NonRec b _) =
                    ++ getOccString (GET_NAME b)
                    ++ ": found forbidden type classes ["
                    ++ DL.intercalate ", " names ++ "]"
-reportInspectedClasses _ _ _ (Rec _) =
+reportInspectedClasses _ _ _ _ (Rec _) =
     error "reportInspectedClasses: expecting only NonRec binders"
 
 -- Returns 0 on no violations and 1 otherwise.
 reportCoreSize
-    :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM -> CoreBind -> CoreM Int
-reportCoreSize dflags reportMode sizeAnns (NonRec b rhs) =
-    case Map.lookup (getOccString (GET_NAME b)) sizeAnns of
+    :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM
+    -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
+reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
+    case lookupBinderAnn b sizeAnns of
         Nothing -> return 0
         Just ann -> go ann
-  where
-    stats = exprStats rhs
-    terms = cs_tm stats
+
+    where
+
+    clSet = binderClosure allBinds b
+    terms = sum (map (cs_tm . exprStats . snd) clSet)
 
     go (MaxCoreSize maxSize) = do
         case reportMode of
@@ -1038,7 +1127,9 @@ reportCoreSize dflags reportMode sizeAnns (NonRec b rhs) =
                 putMsgS $ "fusion-plugin: "
                         ++ showWithUnique dflags b
                         ++ ": core size "
-                        ++ showSDoc dflags (ppr stats)
+                        ++ show terms
+                        ++ " terms (set of " ++ show (length clSet)
+                        ++ " bindings)"
         if terms > maxSize
         then do
             putMsgS $ "fusion-plugin: "
@@ -1048,7 +1139,7 @@ reportCoreSize dflags reportMode sizeAnns (NonRec b rhs) =
                     ++ show maxSize ++ " terms)."
             return 1
         else return 0
-reportCoreSize _ _ _ (Rec _) =
+reportCoreSize _ _ _ _ (Rec _) =
     error "reportCoreSize: expecting only NonRec binders"
 
 -- | Split a string on @\'-\'@ characters.
@@ -1087,7 +1178,7 @@ modulePackageName =
 reportDumpCore ::
     DynFlags -> String -> String -> DUMP_CORE_FM -> CoreBind -> CoreM ()
 reportDumpCore dflags pkgName modName dumpAnns bind@(NonRec b _) =
-    case Map.lookup (getOccString (GET_NAME b)) dumpAnns of
+    case lookupBinderAnn b dumpAnns of
         Nothing -> return ()
         Just _ -> do
             let dir = "fusion-plugin-output" </> pkgName
@@ -1304,13 +1395,14 @@ fusionReport mesg reportMode runInspect werror guts = do
             let liveBndrs = liveTopLevelBinders guts
             let pkgName = modulePackageName (mg_module guts)
             let modName = moduleNameString (moduleName (mg_module guts))
+            let allBinds = flattenBinds (mg_binds guts)
             violations <-
                 if anyUFM (any (== Fuse)) anns || anyReport
                 then fmap sum
                         $ mapM
                             (transformBind
                                 dflags anns inspectAnns classAnns sizeAnns
-                                dumpAnns pkgName modName liveBndrs)
+                                dumpAnns pkgName modName liveBndrs allBinds)
                         $ mg_binds guts
                 else return 0
             when (werror && violations > 0) $ do
@@ -1329,18 +1421,19 @@ fusionReport mesg reportMode runInspect werror guts = do
     transformBind
         :: DynFlags -> UNIQ_FM -> INSPECT_FM -> INSPECT_CLASSES_FM
         -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
-        -> String -> String -> VarSet
+        -> String -> String -> VarSet -> [(CoreBndr, CoreExpr)]
         -> CoreBind -> CoreM Int
     transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
-            pkgName modName liveBndrs bind@(NonRec b _) = do
+            pkgName modName liveBndrs allBinds bind@(NonRec b _) = do
         n1 <- if runInspect
-              then reportInspected dflags reportMode anns inspectAnns bind
+              then reportInspected dflags reportMode anns inspectAnns allBinds bind
               else return 0
         n2 <- if runInspect
-              then reportInspectedClasses dflags reportMode classAnns bind
+              then reportInspectedClasses
+                       dflags reportMode classAnns allBinds bind
               else return 0
         n3 <- if runInspect
-              then reportCoreSize dflags reportMode sizeAnns bind
+              then reportCoreSize dflags reportMode sizeAnns allBinds bind
               else return 0
         when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
         when (b `elemVarSet` liveBndrs) $ do
@@ -1372,10 +1465,13 @@ fusionReport mesg reportMode runInspect werror guts = do
             case reportMode of
                 ReportSilent -> return ()
                 ReportWarn -> do
-                    let allBinds = map fst patternMatches ++ map fst constrs
-                    when (not $ null allBinds) $ do
+                    let allBnds = map fst patternMatches ++ map fst constrs
+                    when (not $ null allBnds) $ do
                         putMsgS "Unfused bindings:"
-                        putMsgS $ DL.unlines $ DL.nub $ map (listPath dflags) allBinds
+                        putMsgS
+                            $ DL.unlines
+                            $ DL.nub
+                            $ map (listPath dflags) allBnds
                 _ -> do
                     showInfo b dflags reportMode "SCRUTINIZE"
                         uniqBinders patternMatches showDetailsCaseMatch
@@ -1384,13 +1480,13 @@ fusionReport mesg reportMode runInspect werror guts = do
         return (n1 + n2 + n3)
 
     transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
-            pkgName modName liveBndrs (Rec bs) =
+            pkgName modName liveBndrs allBinds (Rec bs) =
         fmap sum
             $ mapM
                 (\(b, expr) ->
                     transformBind
                         dflags anns inspectAnns classAnns sizeAnns dumpAnns
-                        pkgName modName liveBndrs (NonRec b expr))
+                        pkgName modName liveBndrs allBinds (NonRec b expr))
                 bs
 
 -------------------------------------------------------------------------------
