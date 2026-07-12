@@ -51,8 +51,7 @@ where
 
 #if MIN_VERSION_ghc(8,6,0)
 -- Imports for all compiler versions
-import Control.Monad (mzero, when)
-import Control.Monad.Trans.Maybe (MaybeT(..))
+import Control.Monad (when)
 import Control.Monad.Trans.State (StateT, evalStateT, get, put)
 import Data.Char (isDigit)
 import Data.Data (Data)
@@ -285,7 +284,7 @@ setVerbosityLevel val = do
     put (args, opts { optionsVerbosityLevel = val })
 
 -- Like the shell "shift" to shift the command line arguments
-shift :: StateT ([String], Options) (MaybeT IO) (Maybe String)
+shift :: Monad m => StateT ([String], Options) m (Maybe String)
 shift = do
     s <- get
     case s of
@@ -294,12 +293,10 @@ shift = do
 
 -- totally imperative style option parsing
 parseOptions :: [CommandLineOption] -> IO Options
-parseOptions args = do
-    maybeOptions <- runMaybeT
-                        $ flip evalStateT (args, defaultOptions)
-                        $ do parseLoop
-                             fmap snd get
-    return $ maybe defaultOptions id maybeOptions
+parseOptions args =
+    flip evalStateT (args, defaultOptions)
+        $ do parseLoop
+             fmap snd get
 
     where
 
@@ -311,11 +308,11 @@ parseOptions args = do
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1
             "verbose=4" -> setVerbosityLevel ReportVerbose2
-            str -> do
+            str ->
                 liftIO
-                    $ putStrLn
+                    $ throwGhcExceptionIO
+                    $ ProgramError
                     $ "fusion-plugin: Unrecognized option - \"" ++ str ++ "\""
-                mzero
 
     parseLoop = do
         next <- shift
