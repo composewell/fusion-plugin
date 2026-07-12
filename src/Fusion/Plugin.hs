@@ -55,7 +55,7 @@ import Control.Monad (when)
 import Control.Monad.Trans.State (StateT, evalStateT, get, put)
 import Data.Char (isDigit)
 import Data.Data (Data)
-import Data.Maybe (catMaybes, isJust, mapMaybe)
+import Data.Maybe (catMaybes, isJust, listToMaybe, mapMaybe)
 import Data.Word (Word8)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
@@ -861,6 +861,13 @@ showInfo parent dflags reportMode
                         $ DL.nub
                         $ map (showDetails dflags reportMode) annotated
 
+binderAnnKeys :: CoreBndr -> [String]
+binderAnnKeys b = nm : [base | Just base <- [DL.stripPrefix "$w" nm]]
+
+    where
+
+    nm = getOccString (GET_NAME b)
+
 -- | Look up a per-binder annotation, accounting for worker/wrapper splitting.
 --
 -- The annotations are keyed by the source-level binder name (e.g. @f@). The
@@ -871,17 +878,7 @@ showInfo parent dflags reportMode
 -- found in the annotation map. So if the direct lookup fails and the binder is
 -- a @$w@ worker, retry with the prefix stripped.
 lookupBinderAnn :: CoreBndr -> Map.Map String a -> Maybe a
-lookupBinderAnn b m =
-    case Map.lookup nm m of
-        found@(Just _) -> found
-        Nothing ->
-            case DL.stripPrefix "$w" nm of
-                Just base -> Map.lookup base m
-                Nothing -> Nothing
-
-    where
-
-    nm = getOccString (GET_NAME b)
+lookupBinderAnn b m = listToMaybe (mapMaybe (`Map.lookup` m) (binderAnnKeys b))
 
 -------------------------------------------------------------------------------
 -- Transitive closure of a binding
@@ -1355,6 +1352,32 @@ liveTopLevelBinders guts = go initial initial
                 newFrontier = next `minusVarSet` visited
             in go newFrontier newVisited
 
+-- binderAnnKeys is shared with lookupBinderAnn and this function so that both
+-- are consistent with each other.
+failOnUnmatchedAnns
+    :: String
+    -> [(CoreBndr, CoreExpr)]
+    -> INSPECT_FM -> INSPECT_CLASSES_FM -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
+    -> CoreM ()
+failOnUnmatchedAnns modName allBinds inspectAnns classAnns sizeAnns dumpAnns = do
+    let candidateKeys = DL.nub (concatMap (binderAnnKeys . fst) allBinds)
+        unmatched =
+            filter (`notElem` candidateKeys) $ DL.nub
+                ( Map.keys inspectAnns ++ Map.keys classAnns
+               ++ Map.keys sizeAnns ++ Map.keys dumpAnns )
+    mapM_
+        (\k ->
+            putMsgS $ "fusion-plugin: " ++ k
+                ++ ": annotated but no such binding in " ++ modName
+                ++ " (inlined away -- try NOINLINE or NoFuseTypes on it).")
+        unmatched
+    when (not (null unmatched)) $
+        liftIO $ throwGhcExceptionIO
+            (ProgramError
+                ("fusion-plugin: " ++ show (length unmatched)
+                  ++ " inspection annotation(s) matched no binding in "
+                  ++ modName ++ "; failing the build."))
+
 -- | @runInspect@ controls whether the per-binding 'InspectTypes' annotations are
 -- also processed. When @werror@ is set, the build is failed (after all
 -- annotation violations in the module have been reported) if any
@@ -1405,6 +1428,10 @@ fusionReport mesg reportMode runInspect werror guts = do
                                 dumpAnns pkgName modName liveBndrs allBinds)
                         $ mg_binds guts
                 else return 0
+            -- Fail on any inspection annotation whose target has no
+            -- corresponding binding in the final core.
+            failOnUnmatchedAnns
+                modName allBinds inspectAnns classAnns sizeAnns dumpAnns
             when (werror && violations > 0) $ do
                 putMsgS $ "fusion-plugin: " ++ show violations
                         ++ " annotation violation(s) reported in " ++ modName
