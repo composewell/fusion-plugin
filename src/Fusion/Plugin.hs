@@ -706,6 +706,19 @@ filterExcluded
 filterExcluded excl =
     filter (\(_, ctx) -> maybe True (`notElem` excl) (contextTyConName ctx))
 
+-- | True when the type occurs in a scrutinizing (pattern-match, i.e. @case@)
+-- position -- a value being deconstructed. Note this is a /use/ of the value,
+-- not an allocation: the box was allocated elsewhere (see 'isAllocating').
+isPatternMatch :: Context -> Bool
+isPatternMatch (CaseAlt _) = True
+isPatternMatch (Constr _)  = False
+
+-- | True when the type occurs in a constructing (allocating) position -- a
+-- value being built here.
+isConstruction :: Context -> Bool
+isConstruction (Constr _)  = True
+isConstruction (CaseAlt _) = False
+
 -- | True for TyCons whose values GHC never heap-allocates: unboxed
 -- primitives (e.g. 'Int#', 'State#'), unboxed tuples/sums, and true
 -- enumeration types (every data constructor nullary, e.g. '()', 'Bool')
@@ -724,6 +737,11 @@ isNonAllocatingTyCon tycon =
 -- all. Applied unconditionally, regardless of which types the active
 -- 'InspectTypes' predicate flags as \"interesting\" -- these are never useful
 -- signal for a boxing/fusion report.
+--
+-- \"Allocating\" here means the hit evidences a live boxed allocation, which
+-- is true of both positions: a 'Constr' allocates a box here, while a
+-- 'CaseAlt' scrutinizes -- merely /uses/ -- a box that was allocated
+-- elsewhere. Both imply a real allocation exists.
 isAllocating :: Context -> Bool
 isAllocating (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
     not (isNonAllocatingTyCon (dataConTyCon dcon))
@@ -793,19 +811,42 @@ removeFuseTypes anns noFuseTypesAnns b =
             names <- resolveTHNames ns
             return $ delListFromUFM anns names
 
--- | Build the "isInteresting" predicate and the exclusion list for a given
--- 'InspectTypes' directive.
-inspectPredicate :: UNIQ_FM -> InspectTypes -> CoreM (Name -> Bool, [Name])
+-- | Build the "isInteresting" predicate, the exclusion list, and the position
+-- filter for a given 'InspectTypes' directive. The position filter selects
+-- which occurrences count: all positions by default, or only the scrutinizing
+-- ('PermitPatternMatches') or only the constructing ('PermitAllocations')
+-- position.
+inspectPredicate
+    :: UNIQ_FM -> InspectTypes -> CoreM (Name -> Bool, [Name], Context -> Bool)
 inspectPredicate _ (ForbidTypes thNames) = do
     names <- resolveTHNames thNames
-    return (\n -> n `elem` names, [])
+    return (\n -> n `elem` names, [], const True)
 inspectPredicate anns (ForbidFused thForbid thAllow) = do
     forbidden <- resolveTHNames thForbid
     allowed <- resolveTHNames thAllow
-    return (\n -> isJust (lookupUFM anns n) || n `elem` forbidden, allowed)
+    return
+        ( \n -> isJust (lookupUFM anns n) || n `elem` forbidden
+        , allowed
+        , const True
+        )
 inspectPredicate _ (PermitTypes thAllow) = do
     allowed <- resolveTHNames thAllow
-    return (const True, allowed)
+    return (const True, allowed, const True)
+inspectPredicate _ (PermitPatternMatches thAllow) = do
+    allowed <- resolveTHNames thAllow
+    return (const True, allowed, isPatternMatch)
+inspectPredicate _ (PermitAllocations thAllow) = do
+    allowed <- resolveTHNames thAllow
+    return (const True, allowed, isConstruction)
+
+-- | For the "permit" (allowlist) directives, the directive's display name and
+-- its allow list; 'Nothing' for the "forbid" directives, which have no
+-- stale-entry warning.
+permitAllowList :: InspectTypes -> Maybe (String, [TH.Name])
+permitAllowList (PermitTypes ns) = Just ("PermitTypes", ns)
+permitAllowList (PermitPatternMatches ns) = Just ("PermitPatternMatches", ns)
+permitAllowList (PermitAllocations ns) = Just ("PermitAllocations", ns)
+permitAllowList _ = Nothing
 
 -------------------------------------------------------------------------------
 -- Core-to-core pass to mark interesting binders to be always inlined
@@ -883,6 +924,10 @@ instance Outputable InspectTypes where
     ppr (ForbidFused f a) =
         text "ForbidFused" <+> text (show f) <+> text (show a)
     ppr (PermitTypes names) = text "PermitTypes" <+> text (show names)
+    ppr (PermitPatternMatches names) =
+        text "PermitPatternMatches" <+> text (show names)
+    ppr (PermitAllocations names) =
+        text "PermitAllocations" <+> text (show names)
 
 -- Orphan instance for 'InspectTypeClasses', used only to print a banner naming
 -- the directive that triggered a focused report.
@@ -1015,8 +1060,9 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
     where
 
     go ispec = do
-        (isInteresting, exclusion) <- inspectPredicate anns ispec
-        let allHits = filterNonAllocating
+        (isInteresting, exclusion, inPosition) <- inspectPredicate anns ispec
+        let allHits = filter (inPosition . snd)
+                    $ filterNonAllocating
                     $ concatMap
                         (\(v, e) ->
                             containsAnns dflags isInteresting (NonRec v e))
@@ -1032,21 +1078,24 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
                 _ -> detailed ispec results
             return 1
 
-    -- Warn about 'PermitTypes' entries that never occur in the binding, so
-    -- that stale types can be pruned from the permit list. The predicate for
-    -- 'PermitTypes' is @const True@, so 'allHits' holds every (allocating)
-    -- type occurrence in the binding.
-    warnStalePermitted (PermitTypes thAllow) allHits = do
-        allowed <- resolveTHNames thAllow
-        let present = mapMaybe (contextTyConName . snd) allHits
-            stale = filter (`notElem` present) allowed
-        unless (null stale) $
-            putMsgS $ "fusion-plugin: "
-                    ++ getOccString (GET_NAME b)
-                    ++ ": these PermitTypes entries were not found in the"
-                    ++ " binding and can be removed: ["
-                    ++ DL.intercalate ", " (map qualifiedName stale) ++ "]"
-    warnStalePermitted _ _ = return ()
+    -- Warn about "permit" (allowlist) entries that never occur in the
+    -- binding, so that stale types can be pruned from the permit list. The
+    -- predicate for these directives is @const True@, so 'allHits' holds
+    -- every (allocating) type occurrence in the relevant position(s).
+    warnStalePermitted ispec allHits =
+        case permitAllowList ispec of
+            Nothing -> return ()
+            Just (label, thAllow) -> do
+                allowed <- resolveTHNames thAllow
+                let present = mapMaybe (contextTyConName . snd) allHits
+                    stale = filter (`notElem` present) allowed
+                unless (null stale) $
+                    putMsgS $ "fusion-plugin: "
+                            ++ getOccString (GET_NAME b)
+                            ++ ": these " ++ label ++ " entries were not found"
+                            ++ " in the binding and can be removed: ["
+                            ++ DL.intercalate ", " (map qualifiedName stale)
+                            ++ "]"
 
     terse results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
