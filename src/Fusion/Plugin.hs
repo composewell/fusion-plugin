@@ -447,6 +447,23 @@ hasInlineBinder bndr =
     let inl = inlinePragInfo $ idInfo bndr
     in isInlinePragma inl && IS_ACTIVE (inlinePragmaActivation inl)
 
+hasNoInlineBinder :: CoreBndr -> Bool
+hasNoInlineBinder bndr = isNoInlinePragma (inlinePragInfo (idInfo bndr))
+
+-- | Unconditionally print (unlike 'debug', which is gated by 'dbgLevel' and
+-- therefore normally silent) that a @NOINLINE@'d binder scrutinizes or
+-- constructs a type this module wants fused. The plugin respects the user's
+-- @NOINLINE@ and will not force this binder to be inlined, so fusion will
+-- most likely not happen here -- worth surfacing loudly rather than only in
+-- debug output, since it is otherwise a silent performance regression.
+warnBlockedByNoInline :: String -> a -> a
+warnBlockedByNoInline path =
+    trace
+        ("fusion-plugin: " ++ path
+          ++ ": has a NOINLINE pragma but matches/constructs a fusible type;"
+          ++ " this binder will not be force-inlined for fusion, so fusion"
+          ++ " will most likely not happen here.")
+
 -------------------------------------------------------------------------------
 -- Inspect case alternatives for interesting constructor matches
 -------------------------------------------------------------------------------
@@ -488,13 +505,14 @@ needInlineCaseAlt
     -> Maybe (Alt CoreBndr)
 needInlineCaseAlt dflags parents anns bndr =
     let mesg = "Binder: " ++ listPath dflags parents
-    in if not (hasInlineBinder $ getNonRecBinder (head parents))
-       then
-            debug 2
-                (mesg ++ " not inlined")
-                $ case altsContainsAnn dflags (isJust . lookupUFM anns) bndr of
-                    Just alt -> Just alt
-                    _ -> Nothing
+        parentBndr = getNonRecBinder (head parents)
+        matched = altsContainsAnn dflags (isJust . lookupUFM anns) bndr
+    in if hasNoInlineBinder parentBndr
+       then case matched of
+                Just _ -> warnBlockedByNoInline (listPath dflags parents) Nothing
+                Nothing -> Nothing
+       else if not (hasInlineBinder parentBndr)
+       then debug 2 (mesg ++ " not inlined") matched
        else debug 2 (mesg ++ " already inlined") Nothing
 
 -------------------------------------------------------------------------------
@@ -582,8 +600,11 @@ letBndrsThatAreCases dflags anns bind = goLet [] bind
 
 needInlineTyCon :: CoreBind -> UNIQ_FM -> TyCon -> Bool
 needInlineTyCon parent anns tycon =
-    case lookupUFM anns (GET_NAME tycon) of
-        Just _ | not (hasInlineBinder $ getNonRecBinder parent) -> True
+    let parentBndr = getNonRecBinder parent
+    in case lookupUFM anns (GET_NAME tycon) of
+        Just _ | hasNoInlineBinder parentBndr ->
+            warnBlockedByNoInline (getOccString parentBndr) False
+        Just _ | not (hasInlineBinder parentBndr) -> True
         _ -> False
 
 -- XXX Currently this function and containsAnns are equivalent. So containsAnns
