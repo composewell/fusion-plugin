@@ -51,7 +51,7 @@ where
 
 #if MIN_VERSION_ghc(8,6,0)
 -- Imports for all compiler versions
-import Control.Monad (when)
+import Control.Monad (when, unless)
 import Control.Monad.Trans.State (StateT, evalStateT, get, put)
 import Data.Char (isDigit)
 import Data.Data (Data)
@@ -99,7 +99,6 @@ import GHC.Utils.Logger (putDumpMsg)
 #elif MIN_VERSION_ghc(9,0,0)
 -- dump core option not supported
 #else
-import Control.Monad (unless)
 import Data.Char (isSpace)
 import Data.IORef (readIORef, writeIORef)
 import Data.Time (getCurrentTime)
@@ -780,17 +779,20 @@ showDetailsCaseMatch dflags reportMode (binds, c@(ALT_CONSTR(con,_,_))) =
                 _ -> ""
     in listPath dflags binds ++ ": " ++ vstr ++ tstr
 
--- | Show a 'TyCon' fully qualified as @Module.Name@ so that types with the
+-- | Show a 'Name' fully qualified as @Module.Name@ so that entities with the
 -- same unqualified name defined in different modules (e.g. several @Step@
--- types) can be told apart in a report. Wired-in types with no defining
+-- types) can be told apart in a report. Wired-in names with no defining
 -- module are shown by their bare name.
-qualifiedTyConName :: TyCon -> String
-qualifiedTyConName tc =
-    let name = getName tc
-    in case nameModule_maybe name of
+qualifiedName :: Name -> String
+qualifiedName name =
+    case nameModule_maybe name of
         Just m ->
             moduleNameString (moduleName m) ++ "." ++ getOccString name
         Nothing -> getOccString name
+
+-- | Show a 'TyCon' fully qualified as @Module.Name@ (see 'qualifiedName').
+qualifiedTyConName :: TyCon -> String
+qualifiedTyConName = qualifiedName . getName
 
 showDetailsConstr
     :: DynFlags
@@ -957,12 +959,13 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
 
     go ispec = do
         (isInteresting, exclusion) <- inspectPredicate anns ispec
-        let results = filterNonAllocating
-                    $ filterExcluded exclusion
+        let allHits = filterNonAllocating
                     $ concatMap
                         (\(v, e) ->
                             containsAnns dflags isInteresting (NonRec v e))
                         (binderClosure allBinds b)
+            results = filterExcluded exclusion allHits
+        warnStalePermitted ispec allHits
         if null results
         then return 0
         else do
@@ -971,6 +974,22 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
                 ReportWarn -> terse results
                 _ -> detailed ispec results
             return 1
+
+    -- Warn about 'PermitTypes' entries that never occur in the binding, so
+    -- that stale types can be pruned from the permit list. The predicate for
+    -- 'PermitTypes' is @const True@, so 'allHits' holds every (allocating)
+    -- type occurrence in the binding.
+    warnStalePermitted (PermitTypes thAllow) allHits = do
+        allowed <- resolveTHNames thAllow
+        let present = mapMaybe (contextTyConName . snd) allHits
+            stale = filter (`notElem` present) allowed
+        unless (null stale) $
+            putMsgS $ "fusion-plugin: "
+                    ++ getOccString (GET_NAME b)
+                    ++ ": these PermitTypes entries were not found in the"
+                    ++ " binding and can be removed: ["
+                    ++ DL.intercalate ", " (map qualifiedName stale) ++ "]"
+    warnStalePermitted _ _ = return ()
 
     terse results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
@@ -1076,10 +1095,11 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
 
     go ispec = do
         isInteresting <- inspectClassPredicate ispec
-        let hits = filter (isInteresting . getName)
-                     $ concatMap
+        let allClasses = concatMap
                          (\(v, e) -> classTyConsInBind (NonRec v e))
                          (binderClosure allBinds b)
+            hits = filter (isInteresting . getName) allClasses
+        warnStalePermitted ispec allClasses
         if null hits
         then return 0
         else do
@@ -1099,6 +1119,20 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
                    ++ getOccString (GET_NAME b)
                    ++ ": found forbidden type classes ["
                    ++ DL.intercalate ", " names ++ "]"
+
+    -- Warn about 'PermitTypeClasses' entries that never occur in the binding,
+    -- so that stale classes can be pruned from the permit list.
+    warnStalePermitted (PermitTypeClasses thAllow) allClasses = do
+        allowed <- resolveTHNames thAllow
+        let present = map getName allClasses
+            stale = filter (`notElem` present) allowed
+        unless (null stale) $
+            putMsgS $ "fusion-plugin: "
+                    ++ getOccString (GET_NAME b)
+                    ++ ": these PermitTypeClasses entries were not found in the"
+                    ++ " binding and can be removed: ["
+                    ++ DL.intercalate ", " (map qualifiedName stale) ++ "]"
+    warnStalePermitted _ _ = return ()
 reportInspectedClasses _ _ _ _ (Rec _) =
     error "reportInspectedClasses: expecting only NonRec binders"
 

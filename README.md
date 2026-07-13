@@ -152,6 +152,8 @@ Allow only the specified types and disallow all others.
 {-# ANN function3 (PermitTypes [''Int, ''IO]) #-}
 function3 :: ...
 ```
+If any of the permitted types is not actually found in the binding, a warning
+is emitted so that stale entries can be removed from the list.
 
 To show all boxed types used within a function:
 ```haskell
@@ -183,6 +185,8 @@ function1 :: ...
 {-# ANN function2 (PermitTypeClasses [''Ord, ''Eq]) #-}
 function2 :: ...
 ```
+If any of the permitted type classes is not actually found in the binding, a
+warning is emitted so that stale entries can be removed from the list.
 
 ### Inspecting Core Size of a Function
 
