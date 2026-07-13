@@ -1092,8 +1092,8 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
                 unless (null stale) $
                     putMsgS $ "fusion-plugin: "
                             ++ getOccString (GET_NAME b)
-                            ++ ": these " ++ label ++ " entries were not found"
-                            ++ " in the binding and can be removed: ["
+                            ++ ": redundant " ++ label
+                            ++ " entries (safe to remove): ["
                             ++ DL.intercalate ", " (map qualifiedName stale)
                             ++ "]"
 
@@ -1235,8 +1235,7 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
         unless (null stale) $
             putMsgS $ "fusion-plugin: "
                     ++ getOccString (GET_NAME b)
-                    ++ ": these PermitTypeClasses entries were not found in the"
-                    ++ " binding and can be removed: ["
+                    ++ ": redundant PermitTypeClasses entries (safe to remove): ["
                     ++ DL.intercalate ", " (map qualifiedName stale) ++ "]"
     warnStalePermitted _ _ = return ()
 reportInspectedClasses _ _ _ _ (Rec _) =
