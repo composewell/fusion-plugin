@@ -1426,9 +1426,9 @@ modulePackageName =
 #endif
 
 dumpBindCore
-    :: DynFlags -> String -> String -> [(CoreBndr, CoreExpr)] -> CoreBind
+    :: DynFlags -> String -> String -> [(CoreBndr, CoreExpr)] -> CoreBndr
     -> CoreM ()
-dumpBindCore dflags pkgName modName allBinds (NonRec b _) = do
+dumpBindCore dflags pkgName modName allBinds b = do
     let dir = pluginDumpDir dflags pkgName
         fileName =
             modName ++ "." ++ getOccString (GET_NAME b) ++ ".dump-simpl"
@@ -1440,8 +1440,6 @@ dumpBindCore dflags pkgName modName allBinds (NonRec b _) = do
         writeFile path (showSDoc dflags doc ++ "\n")
     putMsgS $ "fusion-plugin: "
             ++ showWithUnique dflags b ++ ": dumped core to " ++ path
-dumpBindCore _ _ _ _ (Rec _) =
-    error "dumpBindCore: expecting only NonRec binders"
 
 -- | If the given top level bind's own binder carries a 'DumpCore' annotation,
 -- write the Core of that binding to a file (see 'dumpBindCore'). No-op if the
@@ -1449,10 +1447,10 @@ dumpBindCore _ _ _ _ (Rec _) =
 reportDumpCore ::
     DynFlags -> String -> String -> DUMP_CORE_FM -> [(CoreBndr, CoreExpr)]
     -> CoreBind -> CoreM ()
-reportDumpCore dflags pkgName modName dumpAnns allBinds bind@(NonRec b _) =
+reportDumpCore dflags pkgName modName dumpAnns allBinds (NonRec b _) =
     case lookupBinderAnn b dumpAnns of
         Nothing -> return ()
-        Just _ -> dumpBindCore dflags pkgName modName allBinds bind
+        Just _ -> dumpBindCore dflags pkgName modName allBinds b
 reportDumpCore _ _ _ _ _ (Rec _) =
     error "reportDumpCore: expecting only NonRec binders"
 
@@ -1475,11 +1473,16 @@ markInline pass reportMode transform guts = do
         getAnnotationsByStableName "FuseTypes" deserializeWithData guts
     noFuseTypesAnns <-
         getAnnotationsByStableName "NoFuseTypes" deserializeWithData guts
+    let pkgName = modulePackageName (mg_module guts)
+        modName = moduleNameString (moduleName (mg_module guts))
+        modBinds = flattenBinds (mg_binds guts)
     if (anyUFM (any (== Fuse)) anns || not (Map.null fuseTypesAnns))
     then do
         r <- bindsOnlyPass
                 (mapM
-                    (transformBind dflags anns fuseTypesAnns noFuseTypesAnns))
+                    (transformBind
+                        dflags anns fuseTypesAnns noFuseTypesAnns
+                        pkgName modName modBinds))
                 guts
         if dbgLevel > 0
         then dumpCore 0 (text ("Fusion-plugin-" ++ show pass)) r
@@ -1487,7 +1490,9 @@ markInline pass reportMode transform guts = do
     else return guts
   where
     -- transformBind :: DynFlags -> UniqFM Unique [Fuse] -> CoreBind -> CoreM CoreBind
-    transformBind dflags anns0 fuseTypesAnns noFuseTypesAnns bind@(NonRec b _) = do
+    transformBind
+            dflags anns0 fuseTypesAnns noFuseTypesAnns
+            pkgName modName modBinds bind@(NonRec b _) = do
         -- Types named in a 'FuseTypes' annotation on this binding act as if
         -- they were 'Fuse'-annotated, but only while inlining inside it.
         -- Types named in a 'NoFuseTypes' annotation are stripped of their
@@ -1505,17 +1510,20 @@ markInline pass reportMode transform guts = do
         -- Warn at most once per binder (regardless of how many separate
         -- sites inside it triggered the check) that a NOINLINE pragma is
         -- blocking a fusible match/construction from being force-inlined,
-        -- naming every distinct fusible type found.
+        -- naming every distinct fusible type found, and dump its Core (and
+        -- the closure it reaches) so the blocked fusion can be diagnosed
+        -- without a separate 'DumpCore' annotation.
         let blocked = blockedPat ++ blockedConstr
             blockedBinders = DL.nub $ map (getNonRecBinder . head . fst) blocked
         mapM_
-            (\bb ->
+            (\bb -> do
                 let tycons = DL.nub
                         [ qualifiedTyConName tc
                         | (ps, tc) <- blocked, getNonRecBinder (head ps) == bb ]
-                in putMsgS $ "fusion-plugin: " ++ showWithUnique dflags bb
+                putMsgS $ "fusion-plugin: " ++ showWithUnique dflags bb
                         ++ ": NOINLINE pragma blocks fusion ("
-                        ++ DL.intercalate ", " tycons ++ ")")
+                        ++ DL.intercalate ", " tycons ++ ")"
+                dumpBindCore dflags pkgName modName modBinds bb)
             blockedBinders
 
         -- TBD: For ReportWarn level prepare a single consolidated list of
@@ -1544,12 +1552,15 @@ markInline pass reportMode transform guts = do
                 else bind
         return bind'
 
-    transformBind dflags anns fuseTypesAnns noFuseTypesAnns (Rec bs) = do
+    transformBind
+            dflags anns fuseTypesAnns noFuseTypesAnns
+            pkgName modName modBinds (Rec bs) = do
         fmap Rec (mapM transformAsNonRec bs)
       where
         transformAsNonRec (b, expr) = do
-            r <- transformBind dflags anns fuseTypesAnns noFuseTypesAnns
-                    (NonRec b expr)
+            r <- transformBind
+                    dflags anns fuseTypesAnns noFuseTypesAnns
+                    pkgName modName modBinds (NonRec b expr)
             case r of
                 NonRec b1 expr1 -> return (b1, expr1)
                 _ -> error "Bug: expecting NonRec binder"
@@ -1791,7 +1802,7 @@ fusionReport
                    (dumpCoreIfAnnotated && hasViolationAnn)
                 || (dumpCoreIfViolated && n1 + n2 + n3 > 0)
         when (runInspect && shouldDump) $
-            dumpBindCore dflags pkgName modName allBinds bind
+            dumpBindCore dflags pkgName modName allBinds b
         when (b `elemVarSet` liveBndrs) $ do
             let results = keepHeapAllocatedOnly
                         $ containsAnns dflags (isJust . lookupUFM anns) bind
