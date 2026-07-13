@@ -1379,34 +1379,46 @@ modulePackageName =
         . unitIdString . moduleUnitId
 #endif
 
--- | Write the Core of the given binding to a
--- @\<module-name\>.\<binder-name\>.dump-simpl@ file under 'pluginDumpDir'
--- (GHC's dump directory if configured, else @fusion-plugin-output@).
-dumpBindCore :: DynFlags -> String -> String -> CoreBind -> CoreM ()
-dumpBindCore dflags pkgName modName bind@(NonRec b _) = do
+dumpBindCore
+    :: DynFlags -> String -> String -> [(CoreBndr, CoreExpr)] -> CoreBind
+    -> CoreM ()
+dumpBindCore dflags pkgName modName allBinds (NonRec b _) = do
     let dir = pluginDumpDir dflags pkgName
         fileName =
             modName ++ "." ++ getOccString (GET_NAME b) ++ ".dump-simpl"
         path = dir </> fileName
+        closure = binderClosure allBinds b
+        doc = vcat (map (ppr . uncurry NonRec) closure)
     liftIO $ do
         createDirectoryIfMissing True dir
-        writeFile path (showSDoc dflags (ppr bind) ++ "\n")
+        writeFile path (showSDoc dflags doc ++ "\n")
     putMsgS $ "fusion-plugin: "
             ++ showWithUnique dflags b ++ ": dumped core to " ++ path
-dumpBindCore _ _ _ (Rec _) =
+dumpBindCore _ _ _ _ (Rec _) =
     error "dumpBindCore: expecting only NonRec binders"
 
 -- | If the given top level bind's own binder carries a 'DumpCore' annotation,
 -- write the Core of that binding to a file (see 'dumpBindCore'). No-op if the
 -- binder is not annotated.
 reportDumpCore ::
-    DynFlags -> String -> String -> DUMP_CORE_FM -> CoreBind -> CoreM ()
-reportDumpCore dflags pkgName modName dumpAnns bind@(NonRec b _) =
+    DynFlags -> String -> String -> DUMP_CORE_FM -> [(CoreBndr, CoreExpr)]
+    -> CoreBind -> CoreM ()
+reportDumpCore dflags pkgName modName dumpAnns allBinds bind@(NonRec b _) =
     case lookupBinderAnn b dumpAnns of
         Nothing -> return ()
-        Just _ -> dumpBindCore dflags pkgName modName bind
-reportDumpCore _ _ _ _ (Rec _) =
+        Just _ -> dumpBindCore dflags pkgName modName allBinds bind
+reportDumpCore _ _ _ _ _ (Rec _) =
     error "reportDumpCore: expecting only NonRec binders"
+
+dumpAllBindsCore :: DynFlags -> String -> String -> [CoreBind] -> CoreM ()
+dumpAllBindsCore dflags pkgName modName binds = do
+    let dir = pluginDumpDir dflags pkgName
+        fileName = modName ++ ".dump-simpl"
+        path = dir </> fileName
+    liftIO $ do
+        createDirectoryIfMissing True dir
+        writeFile path (showSDoc dflags (vcat (map ppr binds)) ++ "\n")
+    putMsgS $ "fusion-plugin: " ++ modName ++ ": dumped core to " ++ path
 
 markInline :: Int -> ReportMode -> Bool -> ModGuts -> CoreM ModGuts
 markInline pass reportMode transform guts = do
@@ -1573,11 +1585,12 @@ liveTopLevelBinders guts = go initial initial
 -- binderAnnKeys is shared with lookupBinderAnn and this function so that both
 -- are consistent with each other.
 failOnUnmatchedAnns
-    :: String
-    -> [(CoreBndr, CoreExpr)]
+    :: DynFlags -> String -> String
+    -> [CoreBind] -> [(CoreBndr, CoreExpr)]
     -> INSPECT_FM -> INSPECT_CLASSES_FM -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
     -> CoreM ()
-failOnUnmatchedAnns modName allBinds inspectAnns classAnns sizeAnns dumpAnns = do
+failOnUnmatchedAnns dflags pkgName modName allTopBinds allBinds
+        inspectAnns classAnns sizeAnns dumpAnns = do
     let candidateKeys = DL.nub (concatMap (binderAnnKeys . fst) allBinds)
         unmatched =
             filter (`notElem` candidateKeys) $ DL.nub
@@ -1589,7 +1602,12 @@ failOnUnmatchedAnns modName allBinds inspectAnns classAnns sizeAnns dumpAnns = d
                 ++ ": annotated but no such binding in " ++ modName
                 ++ " (inlined away -- try NOINLINE or NoFuseTypes on it).")
         unmatched
-    when (not (null unmatched)) $
+    when (not (null unmatched)) $ do
+        -- Dump whatever Core we do have before failing: the annotated binding
+        -- is gone, so there is no single 'CoreBind' left to hand to
+        -- 'dumpBindCore', therefore a 'DumpCore' annotation will also not
+        -- work, do a whole-module dump so we can still diagnose the problem.
+        dumpAllBindsCore dflags pkgName modName allTopBinds
         liftIO $ throwGhcExceptionIO
             (ProgramError
                 ("fusion-plugin: " ++ show (length unmatched)
@@ -1660,7 +1678,8 @@ fusionReport
             -- Fail on any inspection annotation whose target has no
             -- corresponding binding in the final core.
             failOnUnmatchedAnns
-                modName allBinds inspectAnns classAnns sizeAnns dumpAnns
+                dflags pkgName modName (mg_binds guts) allBinds
+                inspectAnns classAnns sizeAnns dumpAnns
             when (werror && violations > 0) $ do
                 putMsgS $ "fusion-plugin: " ++ show violations
                         ++ " annotation violation(s) reported in " ++ modName
@@ -1693,7 +1712,8 @@ fusionReport
                        dflags reportMode dumpCoreSizes pkgName modName sizeAnns
                        allBinds bind
               else return 0
-        when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
+        when runInspect $
+            reportDumpCore dflags pkgName modName dumpAnns allBinds bind
         -- Auto-dump the Core of this binding (see 'dumpBindCore') when either:
         --   * 'dump-core-if-annotated' is set and the binding carries a
         --     violation-causing annotation ('InspectTypes', 'InspectTypeClasses'
@@ -1708,7 +1728,7 @@ fusionReport
                    (dumpCoreIfAnnotated && hasViolationAnn)
                 || (dumpCoreIfViolated && n1 + n2 + n3 > 0)
         when (runInspect && shouldDump) $
-            dumpBindCore dflags pkgName modName bind
+            dumpBindCore dflags pkgName modName allBinds bind
         when (b `elemVarSet` liveBndrs) $ do
             let results = keepHeapAllocatedOnly
                         $ containsAnns dflags (isJust . lookupUFM anns) bind
