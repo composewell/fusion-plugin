@@ -10,7 +10,10 @@
   * `MaxCoreSize`: report the size of the optimized Core of a binding.
     With the `dump-core-sizes` plugin option, the core size of every
     annotated binding is also appended to a file.
-  * `DumpCore`: write the core of a specific binding to a file.
+  * `DumpCore`: write the core of a specific binding to a file. The
+    `dump-core-if-annotated` plugin option does the same automatically for
+    every binding carrying a violation-causing annotation (`InspectTypes`,
+    `InspectTypeClasses` or `MaxCoreSize`).
 
 ## 0.2.8
 

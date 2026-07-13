@@ -191,6 +191,18 @@ import Fusion.Plugin.Types
 -- dump directory (see GHC's @-dumpdir@ option), or in
 -- @fusion-plugin-output\/\<package-name\>@ when no dump directory is set, with
 -- one @binding-name,core-size@ row per annotated binding.
+--
+-- To dump the Core of every binding that carries a violation-causing
+-- annotation ('InspectTypes', 'InspectTypeClasses' or 'MaxCoreSize'), pass
+-- the following:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-annotated
+-- @
+--
+-- Each such binding's Core is written to a
+-- @\<module-name\>.\<binder-name\>.dump-simpl@ file in the same directory,
+-- exactly as the 'Fusion.Plugin.Types.DumpCore' annotation would.
 
 -- $impl
 --
@@ -268,6 +280,7 @@ data ReportMode =
 data Options = Options
     { optionsDumpCore :: Bool
     , optionsDumpCoreSizes :: Bool
+    , optionsDumpCoreIfAnnotated :: Bool
     , optionsVerbosityLevel :: ReportMode
     , optionsWError :: Bool
     } deriving Show
@@ -276,6 +289,7 @@ defaultOptions :: Options
 defaultOptions = Options
     { optionsDumpCore = False
     , optionsDumpCoreSizes = False
+    , optionsDumpCoreIfAnnotated = False
     , optionsVerbosityLevel = ReportSilent
     , optionsWError = False
     }
@@ -289,6 +303,12 @@ setDumpCoreSizes :: Monad m => Bool -> StateT ([CommandLineOption], Options) m (
 setDumpCoreSizes val = do
     (args, opts) <- get
     put (args, opts { optionsDumpCoreSizes = val })
+
+setDumpCoreIfAnnotated
+    :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setDumpCoreIfAnnotated val = do
+    (args, opts) <- get
+    put (args, opts { optionsDumpCoreIfAnnotated = val })
 
 setWError :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setWError val = do
@@ -322,6 +342,7 @@ parseOptions args =
         case opt of
             "dump-core" -> setDumpCore True
             "dump-core-sizes" -> setDumpCoreSizes True
+            "dump-core-if-annotated" -> setDumpCoreIfAnnotated True
             "werror" -> setWError True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
@@ -1243,25 +1264,32 @@ modulePackageName =
         . unitIdString . moduleUnitId
 #endif
 
+-- | Write the Core of the given binding to a
+-- @\<module-name\>.\<binder-name\>.dump-simpl@ file under 'pluginDumpDir'
+-- (GHC's dump directory if configured, else @fusion-plugin-output@).
+dumpBindCore :: DynFlags -> String -> String -> CoreBind -> CoreM ()
+dumpBindCore dflags pkgName modName bind@(NonRec b _) = do
+    let dir = pluginDumpDir dflags pkgName
+        fileName =
+            modName ++ "." ++ getOccString (GET_NAME b) ++ ".dump-simpl"
+        path = dir </> fileName
+    liftIO $ do
+        createDirectoryIfMissing True dir
+        writeFile path (showSDoc dflags (ppr bind) ++ "\n")
+    putMsgS $ "fusion-plugin: "
+            ++ showWithUnique dflags b ++ ": dumped core to " ++ path
+dumpBindCore _ _ _ (Rec _) =
+    error "dumpBindCore: expecting only NonRec binders"
+
 -- | If the given top level bind's own binder carries a 'DumpCore' annotation,
--- write the Core of that binding to a file under 'pluginDumpDir' (GHC's
--- dump directory if configured, else @fusion-plugin-output@). No-op if the
+-- write the Core of that binding to a file (see 'dumpBindCore'). No-op if the
 -- binder is not annotated.
 reportDumpCore ::
     DynFlags -> String -> String -> DUMP_CORE_FM -> CoreBind -> CoreM ()
 reportDumpCore dflags pkgName modName dumpAnns bind@(NonRec b _) =
     case lookupBinderAnn b dumpAnns of
         Nothing -> return ()
-        Just _ -> do
-            let dir = pluginDumpDir dflags pkgName
-                fileName =
-                    modName ++ "." ++ getOccString (GET_NAME b) ++ ".dump-simpl"
-                path = dir </> fileName
-            liftIO $ do
-                createDirectoryIfMissing True dir
-                writeFile path (showSDoc dflags (ppr bind) ++ "\n")
-            putMsgS $ "fusion-plugin: "
-                    ++ showWithUnique dflags b ++ ": dumped core to " ++ path
+        Just _ -> dumpBindCore dflags pkgName modName bind
 reportDumpCore _ _ _ _ (Rec _) =
     error "reportDumpCore: expecting only NonRec binders"
 
@@ -1459,9 +1487,11 @@ failOnUnmatchedAnns modName allBinds inspectAnns classAnns sizeAnns dumpAnns = d
 -- annotation-check violation ('InspectTypes', 'InspectTypeClasses' or
 -- 'MaxCoreSize') was found.
 fusionReport
-    :: String -> ReportMode -> Bool -> Bool -> Bool -> ModGuts
+    :: String -> ReportMode -> Bool -> Bool -> Bool -> Bool -> ModGuts
     -> CoreM ModGuts
-fusionReport mesg reportMode runInspect werror dumpCoreSizes guts = do
+fusionReport
+        mesg reportMode runInspect werror dumpCoreSizes dumpCoreIfAnnotated
+        guts = do
     inspectAnns <-
         if runInspect
         then getAnnotationsByStableName "InspectTypes" deserializeWithData guts
@@ -1549,6 +1579,15 @@ fusionReport mesg reportMode runInspect werror dumpCoreSizes guts = do
                        allBinds bind
               else return 0
         when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
+        -- With 'dump-core-if-annotated', dump the Core of any binding carrying a
+        -- violation-causing annotation ('InspectTypes', 'InspectTypeClasses'
+        -- or 'MaxCoreSize') so it can be examined alongside the report.
+        let hasViolationAnn =
+                   isJust (lookupBinderAnn b inspectAnns)
+                || isJust (lookupBinderAnn b classAnns)
+                || isJust (lookupBinderAnn b sizeAnns)
+        when (runInspect && dumpCoreIfAnnotated && hasViolationAnn) $
+            dumpBindCore dflags pkgName modName bind
         when (b `elemVarSet` liveBndrs) $ do
             let results = filterNonAllocating
                         $ containsAnns dflags (isJust . lookupUFM anns) bind
@@ -1925,13 +1964,14 @@ install args todos = do
             -- and case-of-case transformations.
             , let mesg = "Check unfused (post inlining)"
               in CoreDoPluginPass mesg
-                    (fusionReport mesg ReportSilent False False False)
+                    (fusionReport mesg ReportSilent False False False False)
             ]
             (let mesg = "Check unfused (final)"
                  report =
                     fusionReport
                         mesg (optionsVerbosityLevel options) True
                         (optionsWError options) (optionsDumpCoreSizes options)
+                        (optionsDumpCoreIfAnnotated options)
             in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]

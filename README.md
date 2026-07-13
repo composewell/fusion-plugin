@@ -226,6 +226,14 @@ file in the compiler's dump directory (as set by `-dumpdir`), or under
 myFunction :: ...
 ```
 
+Alternatively, pass the `dump-core-if-annotated` option to automatically dump the
+core of every binding that carries a violation-causing annotation
+(`InspectTypes`, `InspectTypeClasses` or `MaxCoreSize`), without adding a
+`DumpCore` annotation to each one:
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-annotated
+```
+
 You can examine the core to find the reported violations.
 
 ### Compilation
