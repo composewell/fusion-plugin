@@ -848,6 +848,11 @@ permitAllowList (PermitPatternMatches ns) = Just ("PermitPatternMatches", ns)
 permitAllowList (PermitAllocations ns) = Just ("PermitAllocations", ns)
 permitAllowList _ = Nothing
 
+forbiddenLabel :: InspectTypes -> String
+forbiddenLabel (PermitAllocations _) = "forbidden allocations"
+forbiddenLabel (PermitPatternMatches _) = "forbidden pattern matches"
+forbiddenLabel _ = "forbidden types"
+
 -------------------------------------------------------------------------------
 -- Core-to-core pass to mark interesting binders to be always inlined
 -------------------------------------------------------------------------------
@@ -1073,8 +1078,8 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
         then return 0
         else do
             case reportMode of
-                ReportSilent -> terse results
-                ReportWarn -> terse results
+                ReportSilent -> terse ispec results
+                ReportWarn -> terse ispec results
                 _ -> detailed ispec results
             return 1
 
@@ -1097,11 +1102,11 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
                             ++ DL.intercalate ", " (map qualifiedName stale)
                             ++ "]"
 
-    terse results =
+    terse ispec results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
         in putMsgS $ "fusion-plugin: "
                    ++ getOccString (GET_NAME b)
-                   ++ ": found forbidden types ["
+                   ++ ": found " ++ forbiddenLabel ispec ++ " ["
                    ++ DL.intercalate ", " names ++ "]"
 
     detailed ispec results = do
