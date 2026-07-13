@@ -55,13 +55,13 @@ import Control.Monad (when, unless)
 import Control.Monad.Trans.State (StateT, evalStateT, get, put)
 import Data.Char (isDigit)
 import Data.Data (Data)
-import Data.Maybe (catMaybes, isJust, listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, isJust, listToMaybe, mapMaybe)
 import Data.Word (Word8)
 import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
 import Debug.Trace (trace)
 import System.Directory (createDirectoryIfMissing)
-import System.FilePath ((</>))
+import System.FilePath ((</>), takeDirectory)
 import qualified Data.List as DL
 import qualified Data.Map.Strict as Map
 import qualified Language.Haskell.TH.Syntax as TH
@@ -179,6 +179,18 @@ import Fusion.Plugin.Types
 -- Output from each transformation is then printed in a different file.
 --
 -- Note: @dump-core@ does not work for GHC-9.0.x, 9.6.x and 9.8.x.
+--
+-- To record the optimized core size of every 'MaxCoreSize'-annotated binding
+-- to a CSV file, pass the following:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
+-- @
+--
+-- Each module writes a @\<module-name\>.core-sizes.csv@ file in the compiler's
+-- dump directory (see GHC's @-dumpdir@ option), or in
+-- @fusion-plugin-output\/\<package-name\>@ when no dump directory is set, with
+-- one @binding-name,core-size@ row per annotated binding.
 
 -- $impl
 --
@@ -255,6 +267,7 @@ data ReportMode =
 
 data Options = Options
     { optionsDumpCore :: Bool
+    , optionsDumpCoreSizes :: Bool
     , optionsVerbosityLevel :: ReportMode
     , optionsWError :: Bool
     } deriving Show
@@ -262,6 +275,7 @@ data Options = Options
 defaultOptions :: Options
 defaultOptions = Options
     { optionsDumpCore = False
+    , optionsDumpCoreSizes = False
     , optionsVerbosityLevel = ReportSilent
     , optionsWError = False
     }
@@ -270,6 +284,11 @@ setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setDumpCore val = do
     (args, opts) <- get
     put (args, opts { optionsDumpCore = val })
+
+setDumpCoreSizes :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setDumpCoreSizes val = do
+    (args, opts) <- get
+    put (args, opts { optionsDumpCoreSizes = val })
 
 setWError :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setWError val = do
@@ -302,6 +321,7 @@ parseOptions args =
     parseOpt opt =
         case opt of
             "dump-core" -> setDumpCore True
+            "dump-core-sizes" -> setDumpCoreSizes True
             "werror" -> setWError True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
@@ -1136,11 +1156,25 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
 reportInspectedClasses _ _ _ _ (Rec _) =
     error "reportInspectedClasses: expecting only NonRec binders"
 
+fallbackDumpDir :: String -> FilePath
+fallbackDumpDir pkgName = "fusion-plugin-output" </> pkgName
+
+pluginDumpDir :: DynFlags -> String -> FilePath
+pluginDumpDir dflags pkgName =
+    fromMaybe (fallbackDumpDir pkgName) (dumpDir dflags)
+
+-- | Path of the CSV file that 'reportCoreSize' appends core sizes to when the
+-- @dump-core-sizes@ option is set: @\<module-name\>.core-sizes.csv@ under
+-- 'pluginDumpDir'.
+coreSizesFile :: DynFlags -> String -> String -> FilePath
+coreSizesFile dflags pkgName modName =
+    pluginDumpDir dflags pkgName </> (modName ++ ".core-sizes.csv")
+
 -- Returns 0 on no violations and 1 otherwise.
 reportCoreSize
-    :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM
+    :: DynFlags -> ReportMode -> Bool -> String -> String -> MAX_CORE_SIZE_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
-reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
+reportCoreSize dflags reportMode dumpCoreSizes pkgName modName sizeAnns allBinds (NonRec b _) =
     case lookupBinderAnn b sizeAnns of
         Nothing -> return 0
         Just ann -> go ann
@@ -1161,6 +1195,12 @@ reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
                         ++ show terms
                         ++ " terms (set of " ++ show (length clSet)
                         ++ " bindings)"
+        -- Append a "binding-name,core-size" row (binder name without its
+        -- unique suffix) to the per-module CSV file.
+        when dumpCoreSizes $ liftIO $ do
+            let path = coreSizesFile dflags pkgName modName
+            createDirectoryIfMissing True (takeDirectory path)
+            appendFile path (getOccString (GET_NAME b) ++ "," ++ show terms ++ "\n")
         if terms > maxSize
         then do
             putMsgS $ "fusion-plugin: "
@@ -1170,7 +1210,7 @@ reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
                     ++ show maxSize ++ " terms)."
             return 1
         else return 0
-reportCoreSize _ _ _ _ (Rec _) =
+reportCoreSize _ _ _ _ _ _ _ (Rec _) =
     error "reportCoreSize: expecting only NonRec binders"
 
 -- | Split a string on @\'-\'@ characters.
@@ -1204,15 +1244,16 @@ modulePackageName =
 #endif
 
 -- | If the given top level bind's own binder carries a 'DumpCore' annotation,
--- write the Core of that binding to a file under the @fusion-plugin-output@
--- directory. No-op if the binder is not annotated.
+-- write the Core of that binding to a file under 'pluginDumpDir' (GHC's
+-- dump directory if configured, else @fusion-plugin-output@). No-op if the
+-- binder is not annotated.
 reportDumpCore ::
     DynFlags -> String -> String -> DUMP_CORE_FM -> CoreBind -> CoreM ()
 reportDumpCore dflags pkgName modName dumpAnns bind@(NonRec b _) =
     case lookupBinderAnn b dumpAnns of
         Nothing -> return ()
         Just _ -> do
-            let dir = "fusion-plugin-output" </> pkgName
+            let dir = pluginDumpDir dflags pkgName
                 fileName =
                     modName ++ "." ++ getOccString (GET_NAME b) ++ ".dump-simpl"
                 path = dir </> fileName
@@ -1417,8 +1458,10 @@ failOnUnmatchedAnns modName allBinds inspectAnns classAnns sizeAnns dumpAnns = d
 -- annotation violations in the module have been reported) if any
 -- annotation-check violation ('InspectTypes', 'InspectTypeClasses' or
 -- 'MaxCoreSize') was found.
-fusionReport :: String -> ReportMode -> Bool -> Bool -> ModGuts -> CoreM ModGuts
-fusionReport mesg reportMode runInspect werror guts = do
+fusionReport
+    :: String -> ReportMode -> Bool -> Bool -> Bool -> ModGuts
+    -> CoreM ModGuts
+fusionReport mesg reportMode runInspect werror dumpCoreSizes guts = do
     inspectAnns <-
         if runInspect
         then getAnnotationsByStableName "InspectTypes" deserializeWithData guts
@@ -1453,6 +1496,13 @@ fusionReport mesg reportMode runInspect werror guts = do
             let pkgName = modulePackageName (mg_module guts)
             let modName = moduleNameString (moduleName (mg_module guts))
             let allBinds = flattenBinds (mg_binds guts)
+            -- Truncate the per-module core-sizes CSV once, before any binding
+            -- is processed, so 'reportCoreSize' can append fresh rows to it
+            -- without carrying over stale entries from a previous build.
+            when (dumpCoreSizes && anyMaxCoreSize) $ liftIO $ do
+                let path = coreSizesFile dflags pkgName modName
+                createDirectoryIfMissing True (takeDirectory path)
+                writeFile path ""
             violations <-
                 if anyUFM (any (== Fuse)) anns || anyReport
                 then fmap sum
@@ -1494,7 +1544,9 @@ fusionReport mesg reportMode runInspect werror guts = do
                        dflags reportMode classAnns allBinds bind
               else return 0
         n3 <- if runInspect
-              then reportCoreSize dflags reportMode sizeAnns allBinds bind
+              then reportCoreSize
+                       dflags reportMode dumpCoreSizes pkgName modName sizeAnns
+                       allBinds bind
               else return 0
         when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
         when (b `elemVarSet` liveBndrs) $ do
@@ -1873,13 +1925,13 @@ install args todos = do
             -- and case-of-case transformations.
             , let mesg = "Check unfused (post inlining)"
               in CoreDoPluginPass mesg
-                    (fusionReport mesg ReportSilent False False)
+                    (fusionReport mesg ReportSilent False False False)
             ]
             (let mesg = "Check unfused (final)"
                  report =
                     fusionReport
                         mesg (optionsVerbosityLevel options) True
-                        (optionsWError options)
+                        (optionsWError options) (optionsDumpCoreSizes options)
             in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]

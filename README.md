@@ -206,10 +206,21 @@ This prints a line such as:
 fusion-plugin: myFunction: core size (1361 terms) exceeds the specified size (1000 terms).
 ```
 
+To record the core size of every `MaxCoreSize`-annotated binding to a file,
+pass the `dump-core-sizes` option:
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
+```
+Each module then writes a `<module-name>.core-sizes.csv` file in the
+compiler's dump directory (as set by `-dumpdir`), or in
+`fusion-plugin-output/<package-name>` when no dump directory is set, with one
+`binding-name,core-size` row per annotated binding.
+
 ### Generating Core of a Function
 
 Use `DumpCore` annotation to write the final simplified core of a function to a
-file under `fusion-plugin-output` directory:
+file in the compiler's dump directory (as set by `-dumpdir`), or under
+`fusion-plugin-output/<package-name>` when no dump directory is set:
 ```haskell
 {-# ANN myFunction DumpCore #-}
 myFunction :: ...

@@ -8,6 +8,8 @@
   * `InspectTypeClasses`: Forbid or permit existence of given type
     classes within a binding.
   * `MaxCoreSize`: report the size of the optimized Core of a binding.
+    With the `dump-core-sizes` plugin option, the core size of every
+    annotated binding is also appended to a file.
   * `DumpCore`: write the core of a specific binding to a file.
 
 ## 0.2.8
