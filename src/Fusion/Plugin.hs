@@ -1513,9 +1513,15 @@ markInline pass reportMode transform guts = do
         -- naming every distinct fusible type found, and dump its Core (and
         -- the closure it reaches) so the blocked fusion can be diagnosed
         -- without a separate 'DumpCore' annotation.
+        --
+        -- A NOINLINE'd binder is never touched by 'setInlineOnBndrs', so the
+        -- same block is reported identically on every one of the 3
+        -- 'fusionMarkInline' passes 'install' runs per compile; restrict to
+        -- pass 1 so it is reported (and the core dumped) only once per
+        -- compile rather than 3 times.
         let blocked = blockedPat ++ blockedConstr
             blockedBinders = DL.nub $ map (getNonRecBinder . head . fst) blocked
-        mapM_
+        when (pass == 1) $ mapM_
             (\bb -> do
                 let tycons = DL.nub
                         [ qualifiedTyConName tc
