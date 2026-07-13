@@ -203,6 +203,13 @@ import Fusion.Plugin.Types
 -- Each such binding's Core is written to a
 -- @\<module-name\>.\<binder-name\>.dump-simpl@ file in the same directory,
 -- exactly as the 'Fusion.Plugin.Types.DumpCore' annotation would.
+--
+-- Similarly, @dump-core-if-violated@ dumps the Core of only those annotated
+-- bindings for which a check actually reported a violation:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-violated
+-- @
 
 -- $impl
 --
@@ -281,6 +288,7 @@ data Options = Options
     { optionsDumpCore :: Bool
     , optionsDumpCoreSizes :: Bool
     , optionsDumpCoreIfAnnotated :: Bool
+    , optionsDumpCoreIfViolated :: Bool
     , optionsVerbosityLevel :: ReportMode
     , optionsWError :: Bool
     } deriving Show
@@ -290,6 +298,7 @@ defaultOptions = Options
     { optionsDumpCore = False
     , optionsDumpCoreSizes = False
     , optionsDumpCoreIfAnnotated = False
+    , optionsDumpCoreIfViolated = False
     , optionsVerbosityLevel = ReportSilent
     , optionsWError = False
     }
@@ -309,6 +318,12 @@ setDumpCoreIfAnnotated
 setDumpCoreIfAnnotated val = do
     (args, opts) <- get
     put (args, opts { optionsDumpCoreIfAnnotated = val })
+
+setDumpCoreIfViolated
+    :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setDumpCoreIfViolated val = do
+    (args, opts) <- get
+    put (args, opts { optionsDumpCoreIfViolated = val })
 
 setWError :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setWError val = do
@@ -343,6 +358,7 @@ parseOptions args =
             "dump-core" -> setDumpCore True
             "dump-core-sizes" -> setDumpCoreSizes True
             "dump-core-if-annotated" -> setDumpCoreIfAnnotated True
+            "dump-core-if-violated" -> setDumpCoreIfViolated True
             "werror" -> setWError True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
@@ -1487,11 +1503,11 @@ failOnUnmatchedAnns modName allBinds inspectAnns classAnns sizeAnns dumpAnns = d
 -- annotation-check violation ('InspectTypes', 'InspectTypeClasses' or
 -- 'MaxCoreSize') was found.
 fusionReport
-    :: String -> ReportMode -> Bool -> Bool -> Bool -> Bool -> ModGuts
+    :: String -> ReportMode -> Bool -> Bool -> Bool -> Bool -> Bool -> ModGuts
     -> CoreM ModGuts
 fusionReport
         mesg reportMode runInspect werror dumpCoreSizes dumpCoreIfAnnotated
-        guts = do
+        dumpCoreIfViolated guts = do
     inspectAnns <-
         if runInspect
         then getAnnotationsByStableName "InspectTypes" deserializeWithData guts
@@ -1579,14 +1595,20 @@ fusionReport
                        allBinds bind
               else return 0
         when runInspect $ reportDumpCore dflags pkgName modName dumpAnns bind
-        -- With 'dump-core-if-annotated', dump the Core of any binding carrying a
-        -- violation-causing annotation ('InspectTypes', 'InspectTypeClasses'
-        -- or 'MaxCoreSize') so it can be examined alongside the report.
+        -- Auto-dump the Core of this binding (see 'dumpBindCore') when either:
+        --   * 'dump-core-if-annotated' is set and the binding carries a
+        --     violation-causing annotation ('InspectTypes', 'InspectTypeClasses'
+        --     or 'MaxCoreSize'), or
+        --   * 'dump-core-if-violated' is set and one of those checks actually
+        --     reported a violation for this binding (n1 + n2 + n3 > 0).
         let hasViolationAnn =
                    isJust (lookupBinderAnn b inspectAnns)
                 || isJust (lookupBinderAnn b classAnns)
                 || isJust (lookupBinderAnn b sizeAnns)
-        when (runInspect && dumpCoreIfAnnotated && hasViolationAnn) $
+            shouldDump =
+                   (dumpCoreIfAnnotated && hasViolationAnn)
+                || (dumpCoreIfViolated && n1 + n2 + n3 > 0)
+        when (runInspect && shouldDump) $
             dumpBindCore dflags pkgName modName bind
         when (b `elemVarSet` liveBndrs) $ do
             let results = filterNonAllocating
@@ -1964,7 +1986,7 @@ install args todos = do
             -- and case-of-case transformations.
             , let mesg = "Check unfused (post inlining)"
               in CoreDoPluginPass mesg
-                    (fusionReport mesg ReportSilent False False False False)
+                    (fusionReport mesg ReportSilent False False False False False)
             ]
             (let mesg = "Check unfused (final)"
                  report =
@@ -1972,6 +1994,7 @@ install args todos = do
                         mesg (optionsVerbosityLevel options) True
                         (optionsWError options) (optionsDumpCoreSizes options)
                         (optionsDumpCoreIfAnnotated options)
+                        (optionsDumpCoreIfViolated options)
             in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]

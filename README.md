@@ -234,6 +234,12 @@ core of every binding that carries a violation-causing annotation
 ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-annotated
 ```
 
+Use `dump-core-if-violated` instead to dump the core of only those annotated
+bindings for which a check actually reported a violation:
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-violated
+```
+
 You can examine the core to find the reported violations.
 
 ### Compilation

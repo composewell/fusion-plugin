@@ -13,7 +13,8 @@
   * `DumpCore`: write the core of a specific binding to a file. The
     `dump-core-if-annotated` plugin option does the same automatically for
     every binding carrying a violation-causing annotation (`InspectTypes`,
-    `InspectTypeClasses` or `MaxCoreSize`).
+    `InspectTypeClasses` or `MaxCoreSize`), and `dump-core-if-violated`
+    does so only for bindings that actually reported a violation.
 
 ## 0.2.8
 
