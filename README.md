@@ -143,13 +143,13 @@ function1b :: ...
 Disallow the specified types and allow the rest, irrespective of `Fuse`
 annotation.
 ```haskell
-{-# ANN function2 (ForbidTypes [''Step]) #-}
+{-# ANN function2 (ForbidBoxedUse [''Step]) #-}
 function2 :: ...
 ```
 
 Allow only the specified types and disallow all others.
 ```haskell
-{-# ANN function3 (PermitTypes [''Int, ''IO]) #-}
+{-# ANN function3 (PermitBoxedUse [''Int, ''IO]) #-}
 function3 :: ...
 ```
 If any of the permitted types is not actually found in the binding, a warning
@@ -157,7 +157,7 @@ is emitted so that stale entries can be removed from the list.
 
 To show all boxed types used within a function:
 ```haskell
-{-# ANN function4 (PermitTypes []) #-}
+{-# ANN function4 (PermitBoxedUse []) #-}
 function4 :: ...
 ```
 

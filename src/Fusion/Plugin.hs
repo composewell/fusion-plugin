@@ -818,7 +818,7 @@ removeFuseTypes anns noFuseTypesAnns b =
 -- position.
 inspectPredicate
     :: UNIQ_FM -> InspectTypes -> CoreM (Name -> Bool, [Name], Context -> Bool)
-inspectPredicate _ (ForbidTypes thNames) = do
+inspectPredicate _ (ForbidBoxedUse thNames) = do
     names <- resolveTHNames thNames
     return (\n -> n `elem` names, [], const True)
 inspectPredicate anns (ForbidFused thForbid thAllow) = do
@@ -829,7 +829,7 @@ inspectPredicate anns (ForbidFused thForbid thAllow) = do
         , allowed
         , const True
         )
-inspectPredicate _ (PermitTypes thAllow) = do
+inspectPredicate _ (PermitBoxedUse thAllow) = do
     allowed <- resolveTHNames thAllow
     return (const True, allowed, const True)
 inspectPredicate _ (PermitPatternMatches thAllow) = do
@@ -843,7 +843,7 @@ inspectPredicate _ (PermitAllocations thAllow) = do
 -- its allow list; 'Nothing' for the "forbid" directives, which have no
 -- stale-entry warning.
 permitAllowList :: InspectTypes -> Maybe (String, [TH.Name])
-permitAllowList (PermitTypes ns) = Just ("PermitTypes", ns)
+permitAllowList (PermitBoxedUse ns) = Just ("PermitBoxedUse", ns)
 permitAllowList (PermitPatternMatches ns) = Just ("PermitPatternMatches", ns)
 permitAllowList (PermitAllocations ns) = Just ("PermitAllocations", ns)
 permitAllowList _ = Nothing
@@ -920,10 +920,10 @@ instance Outputable Fuse where
 -- their derived 'Show' instance rather than GHC's 'Outputable' (which has
 -- no instance for 'TH.Name').
 instance Outputable InspectTypes where
-    ppr (ForbidTypes names) = text "ForbidTypes" <+> text (show names)
+    ppr (ForbidBoxedUse names) = text "ForbidBoxedUse" <+> text (show names)
     ppr (ForbidFused f a) =
         text "ForbidFused" <+> text (show f) <+> text (show a)
-    ppr (PermitTypes names) = text "PermitTypes" <+> text (show names)
+    ppr (PermitBoxedUse names) = text "PermitBoxedUse" <+> text (show names)
     ppr (PermitPatternMatches names) =
         text "PermitPatternMatches" <+> text (show names)
     ppr (PermitAllocations names) =
