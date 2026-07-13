@@ -455,11 +455,11 @@ data InlineNeed a
     = InlineNeeded a
       -- ^ Matches a fusible type and the binder carries no active inline
       -- pragma of its own yet -- force it inline.
-    | InlineBlockedByNoInline
-      -- ^ Matches a fusible type, but the binder carries an explicit user
-      -- @NOINLINE@ pragma, which the plugin must never override. Reported
-      -- once per binder (not once per matching site) by the caller -- see
-      -- 'transformBind'.
+    | InlineBlockedByNoInline TyCon
+      -- ^ Matches the given fusible type, but the binder carries an
+      -- explicit user @NOINLINE@ pragma, which the plugin must never
+      -- override. Reported once per binder (not once per matching site) by
+      -- the caller -- see 'transformBind'.
     | InlineNotNeeded
       -- ^ Either no fusible match, or the binder is already marked inline.
 
@@ -508,8 +508,9 @@ needInlineCaseAlt dflags parents anns bndr =
         matched = altsContainsAnn dflags (isJust . lookupUFM anns) bndr
     in if hasNoInlineBinder parentBndr
        then case matched of
-                Just _ -> InlineBlockedByNoInline
-                Nothing -> InlineNotNeeded
+                Just (ALT_CONSTR(DataAlt dcon,_,_)) ->
+                    InlineBlockedByNoInline (dataConTyCon dcon)
+                _ -> InlineNotNeeded
        else if not (hasInlineBinder parentBndr)
        then debug 2 (mesg ++ " not inlined") $
                 case matched of
@@ -549,7 +550,7 @@ letBndrsThatAreCases
     :: DynFlags
     -> UNIQ_FM
     -> CoreBind
-    -> [Either [CoreBind] ([CoreBind], Alt CoreBndr)]
+    -> [Either ([CoreBind], TyCon) ([CoreBind], Alt CoreBndr)]
 letBndrsThatAreCases dflags anns bind = goLet [] bind
   where
     -- The first argument is current binder and its parent chain. We add a new
@@ -562,7 +563,7 @@ letBndrsThatAreCases dflags anns bind = goLet [] bind
     -- want to consider inlining the current binder.
     --
     go :: [CoreBind] -> Bool -> CoreExpr
-       -> [Either [CoreBind] ([CoreBind], Alt CoreBndr)]
+       -> [Either ([CoreBind], TyCon) ([CoreBind], Alt CoreBndr)]
 
     -- Match and record the case alternative if it contains a constructor
     -- annotated with "Fuse" and traverse the Alt expressions to discover more
@@ -571,7 +572,7 @@ letBndrsThatAreCases dflags anns bind = goLet [] bind
         let result = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents False expr1)
         in case needInlineCaseAlt dflags parents anns alts of
             InlineNeeded x -> Right (parents, x) : result
-            InlineBlockedByNoInline -> Left parents : result
+            InlineBlockedByNoInline tycon -> Left (parents, tycon) : result
             InlineNotNeeded -> result
 
     -- Only traverse the Alt expressions of the case to discover new let
@@ -602,7 +603,7 @@ letBndrsThatAreCases dflags anns bind = goLet [] bind
     go _ _ (Coercion _) = []
 
     goLet :: [CoreBind] -> CoreBind
-          -> [Either [CoreBind] ([CoreBind], Alt CoreBndr)]
+          -> [Either ([CoreBind], TyCon) ([CoreBind], Alt CoreBndr)]
     -- Here we pass the second argument to "go" as "True" i.e. we are now
     -- looking to match the case alternatives for annotated constructors.
     goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) True expr1
@@ -613,7 +614,7 @@ needInlineTyCon :: CoreBind -> UNIQ_FM -> TyCon -> InlineNeed ()
 needInlineTyCon parent anns tycon =
     let parentBndr = getNonRecBinder parent
     in case lookupUFM anns (GET_NAME tycon) of
-        Just _ | hasNoInlineBinder parentBndr -> InlineBlockedByNoInline
+        Just _ | hasNoInlineBinder parentBndr -> InlineBlockedByNoInline tycon
         Just _ | not (hasInlineBinder parentBndr) -> InlineNeeded ()
         _ -> InlineNotNeeded
 
@@ -628,13 +629,15 @@ needInlineTyCon parent anns tycon =
 -- See 'letBndrsThatAreCases' for the meaning of the 'Either' result: 'Left'
 -- is a binder blocked from force-inlining by a user @NOINLINE@ pragma,
 -- 'Right' is an actual hit to force inline.
-constructingBinders :: UNIQ_FM -> CoreBind -> [Either [CoreBind] ([CoreBind], Id)]
+constructingBinders
+    :: UNIQ_FM -> CoreBind -> [Either ([CoreBind], TyCon) ([CoreBind], Id)]
 constructingBinders anns bind = goLet [] bind
   where
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
     --
-    go :: [CoreBind] -> CoreExpr -> [Either [CoreBind] ([CoreBind], Id)]
+    go :: [CoreBind] -> CoreExpr
+       -> [Either ([CoreBind], TyCon) ([CoreBind], Id)]
 
     -- Enter a new let binding inside the current expression and traverse the
     -- let expression as well.
@@ -660,7 +663,8 @@ constructingBinders anns bind = goLet [] bind
                     | Just dcon <- isDataConId_maybe i ->
                         case needInline (dataConTyCon dcon) of
                             InlineNeeded () -> [Right (parents, i)]
-                            InlineBlockedByNoInline -> [Left parents]
+                            InlineBlockedByNoInline tycon ->
+                                [Left (parents, tycon)]
                             InlineNotNeeded -> []
                 _ -> []
         in hit ++ go parents fun ++ concatMap (go parents) args
@@ -676,7 +680,7 @@ constructingBinders anns bind = goLet [] bind
             Just tycon ->
                 case needInline tycon of
                     InlineNeeded () -> [Right (parents, i)]
-                    InlineBlockedByNoInline -> [Left parents]
+                    InlineBlockedByNoInline tc -> [Left (parents, tc)]
                     InlineNotNeeded -> []
             Nothing -> []
 
@@ -685,7 +689,8 @@ constructingBinders anns bind = goLet [] bind
     go _ (Type _) = []
     go _ (Coercion _) = []
 
-    goLet :: [CoreBind] -> CoreBind -> [Either [CoreBind] ([CoreBind], Id)]
+    goLet :: [CoreBind] -> CoreBind
+          -> [Either ([CoreBind], TyCon) ([CoreBind], Id)]
     goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
@@ -1499,12 +1504,18 @@ markInline pass reportMode transform guts = do
 
         -- Warn at most once per binder (regardless of how many separate
         -- sites inside it triggered the check) that a NOINLINE pragma is
-        -- blocking a fusible match/construction from being force-inlined.
-        let blockedBinders =
-                DL.nub $ map (getNonRecBinder . head) (blockedPat ++ blockedConstr)
+        -- blocking a fusible match/construction from being force-inlined,
+        -- naming every distinct fusible type found.
+        let blocked = blockedPat ++ blockedConstr
+            blockedBinders = DL.nub $ map (getNonRecBinder . head . fst) blocked
         mapM_
-            (\bb -> putMsgS $ "fusion-plugin: " ++ showWithUnique dflags bb
-                    ++ ": NOINLINE pragma blocks fusion")
+            (\bb ->
+                let tycons = DL.nub
+                        [ qualifiedTyConName tc
+                        | (ps, tc) <- blocked, getNonRecBinder (head ps) == bb ]
+                in putMsgS $ "fusion-plugin: " ++ showWithUnique dflags bb
+                        ++ ": NOINLINE pragma blocks fusion ("
+                        ++ DL.intercalate ", " tycons ++ ")")
             blockedBinders
 
         -- TBD: For ReportWarn level prepare a single consolidated list of
