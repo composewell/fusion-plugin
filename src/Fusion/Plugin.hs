@@ -609,6 +609,25 @@ constructingBinders anns bind = goLet [] bind
     -- Traverse these to discover new let bindings
     go parents (Case _ _ _ alts) =
         alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
+    -- If the head of the application spine is a data constructor, record a hit
+    -- for its type -- this recognizes a constructor applied to its fields
+    -- (e.g. `Yield x y`), which checking a bare 'Var' node's own type cannot:
+    -- the unapplied constructor 'Id' has a function type, not the constructed
+    -- type, so that check only fires for nullary constructors.
+    --
+    -- XXX Inlining these cases can bloat the code, need to prove the benefit
+    -- before enabling this.
+    {-
+    go parents e@(App _ _) =
+        let (fun, args) = collectArgs e
+            needInline = needInlineTyCon (head parents) anns
+            hit = case fun of
+                Var i
+                    | Just dcon <- isDataConId_maybe i
+                    , needInline (dataConTyCon dcon) -> [(parents, i)]
+                _ -> []
+        in hit ++ go parents fun ++ concatMap (go parents) args
+    -}
     go parents (App expr1 expr2) = go parents expr1 ++ go parents expr2
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
@@ -661,8 +680,20 @@ containsAnns dflags isInteresting bind =
     -- let expression as well.
     go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
 
-    -- Traverse these to discover new let bindings
-    go parents (App expr1 expr2) = go parents expr1 ++ go parents expr2
+    -- If the head of the application spine is a data constructor, record a hit
+    -- for its type -- this recognizes a constructor applied to its fields
+    -- (e.g. `Yield x y`), which checking a bare 'Var' node's own type cannot:
+    -- the unapplied constructor 'Id' has a function type, not the constructed
+    -- type, so that check only fires for nullary constructors.
+    go parents e@(App _ _) =
+        let (fun, args) = collectArgs e
+            hit = case fun of
+                Var i
+                    | Just dcon <- isDataConId_maybe i
+                    , isInteresting (GET_NAME (dataConTyCon dcon)) ->
+                        [(parents, Constr i)]
+                _ -> []
+        in hit ++ go parents fun ++ concatMap (go parents) args
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
 
@@ -684,12 +715,25 @@ containsAnns dflags isInteresting bind =
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
+-- | Resolve the 'TyCon' a 'Constr' hit represents. When the 'Id' is itself a
+-- data constructor (regardless of arity), resolve via its 'DataCon' rather
+-- than the 'Id's own type: a non-nullary constructor's own type is a
+-- function over its fields (e.g. @(:) :: a -> [a] -> [a]@), and even a
+-- nullary constructor's is forall-quantified (e.g. @[] :: forall a. [a]@),
+-- so neither is itself the constructed type that 'tyConAppTyConPicky_maybe'
+-- can see. Falls back to the 'Id's own type for a bare boxed-use hit that is
+-- not itself a constructor (e.g. a local binder of the annotated type).
+constrTyCon :: Id -> Maybe TyCon
+constrTyCon con =
+    case isDataConId_maybe con of
+        Just dcon -> Just (dataConTyCon dcon)
+        Nothing -> tyConAppTyConPicky_maybe (varType con)
+
 contextTyConName :: Context -> Maybe Name
 contextTyConName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
     Just (GET_NAME $ dataConTyCon dcon)
 contextTyConName (CaseAlt _) = Nothing
-contextTyConName (Constr con) =
-    GET_NAME <$> tyConAppTyConPicky_maybe (varType con)
+contextTyConName (Constr con) = GET_NAME <$> constrTyCon con
 
 -- | Like 'contextTyConName' but yields the fully-qualified @Module.Type@ name
 -- (via 'qualifiedTyConName') used in reports rather than the raw 'Name'.
@@ -697,8 +741,7 @@ contextQualifiedName :: Context -> Maybe String
 contextQualifiedName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
     Just (qualifiedTyConName (dataConTyCon dcon))
 contextQualifiedName (CaseAlt _) = Nothing
-contextQualifiedName (Constr con) =
-    qualifiedTyConName <$> tyConAppTyConPicky_maybe (varType con)
+contextQualifiedName (Constr con) = qualifiedTyConName <$> constrTyCon con
 
 -- | Drop any hit whose TyCon 'Name' is in the given exclusion list.
 filterExcluded
@@ -708,7 +751,7 @@ filterExcluded excl =
 
 -- | True when the type occurs in a scrutinizing (pattern-match, i.e. @case@)
 -- position -- a value being deconstructed. Note this is a /use/ of the value,
--- not an allocation: the box was allocated elsewhere (see 'isAllocating').
+-- not an allocation: the box was allocated elsewhere (see 'isHeapAllocated').
 isPatternMatch :: Context -> Bool
 isPatternMatch (CaseAlt _) = True
 isPatternMatch (Constr _)  = False
@@ -723,38 +766,41 @@ isConstruction (CaseAlt _) = False
 -- primitives (e.g. 'Int#', 'State#'), unboxed tuples/sums, and true
 -- enumeration types (every data constructor nullary, e.g. '()', 'Bool')
 -- which are compiled as statically shared singletons.
-isNonAllocatingTyCon :: TyCon -> Bool
-isNonAllocatingTyCon tycon =
+isNotHeapAllocatedTyCon :: TyCon -> Bool
+isNotHeapAllocatedTyCon tycon =
     isPrimTyCon tycon
     || isUnboxedTupleTyCon tycon
     || isUnboxedSumTyCon tycon
     || isEnumerationTyCon tycon
 
--- | False for hits that can never represent leftover boxing: a case match
--- or construction of a non-allocating type (see 'isNonAllocatingTyCon'), or
--- a bare reference to something of function type (e.g. a primop like
--- \"+#\", or a specialized worker) which is not a data construction at
--- all. Applied unconditionally, regardless of which types the active
--- 'InspectTypes' predicate flags as \"interesting\" -- these are never useful
--- signal for a boxing/fusion report.
+-- | False for the cases that can never represent boxing: a case match or
+-- construction of a non-allocating type (see 'isNotHeapAllocatedTyCon'), or a
+-- bare reference to something of function type (e.g. a primop like \"+#\", or
+-- a specialized worker) which is not a data construction at all.
 --
--- \"Allocating\" here means the hit evidences a live boxed allocation, which
--- is true of both positions: a 'Constr' allocates a box here, while a
--- 'CaseAlt' scrutinizes -- merely /uses/ -- a box that was allocated
--- elsewhere. Both imply a real allocation exists.
-isAllocating :: Context -> Bool
-isAllocating (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
-    not (isNonAllocatingTyCon (dataConTyCon dcon))
-isAllocating (CaseAlt _) = True
-isAllocating (Constr con) =
-    not (isFunTy (varType con))
-    && maybe True (not . isNonAllocatingTyCon)
-             (tyConAppTyConPicky_maybe (varType con))
+-- This covers all usage including case scrutiny as well as construction.
+isHeapAllocated :: Context -> Bool
+isHeapAllocated (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+    not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
+isHeapAllocated (CaseAlt _) = True
+isHeapAllocated (Constr con) =
+    case isDataConId_maybe con of
+        -- A genuine data-constructor 'Id' is never itself the "bare
+        -- reference to something of function type" this guards against
+        -- (that's a primop/worker, never a 'DataCon'), so the 'isFunTy'
+        -- exclusion below does not apply here -- it would wrongly drop
+        -- every non-nullary constructor (e.g. @(:)@), whose own type is a
+        -- function over its fields.
+        Just dcon -> not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
+        Nothing ->
+            not (isFunTy (varType con))
+            && maybe True (not . isNotHeapAllocatedTyCon)
+                     (tyConAppTyConPicky_maybe (varType con))
 
--- | Drop hits that can never represent leftover boxing (see 'isAllocating').
-filterNonAllocating
+-- | Drop the cases that can never represent boxing (see 'isHeapAllocated').
+keepHeapAllocatedOnly
     :: [([CoreBind], Context)] -> [([CoreBind], Context)]
-filterNonAllocating = filter (isAllocating . snd)
+keepHeapAllocatedOnly = filter (isHeapAllocated . snd)
 
 -- | Like GHC 'getAnnotations' but keyed by 'OccName' string instead of by
 -- 'Name' (i.e. by 'Unique'). 'getAnnotations' folds annotations into a
@@ -903,7 +949,7 @@ showDetailsConstr
     -> ([CoreBind], Id)
     -> String
 showDetailsConstr dflags reportMode (binds, con) =
-    let t = tyConAppTyConPicky_maybe (varType con)
+    let t = constrTyCon con
         vstr =
             case reportMode of
                 ReportVerbose -> showSDoc dflags (ppr con)
@@ -1067,7 +1113,7 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
     go ispec = do
         (isInteresting, exclusion, inPosition) <- inspectPredicate anns ispec
         let allHits = filter (inPosition . snd)
-                    $ filterNonAllocating
+                    $ keepHeapAllocatedOnly
                     $ concatMap
                         (\(v, e) ->
                             containsAnns dflags isInteresting (NonRec v e))
@@ -1664,7 +1710,7 @@ fusionReport
         when (runInspect && shouldDump) $
             dumpBindCore dflags pkgName modName bind
         when (b `elemVarSet` liveBndrs) $ do
-            let results = filterNonAllocating
+            let results = keepHeapAllocatedOnly
                         $ containsAnns dflags (isJust . lookupUFM anns) bind
 
             let getAlts x =
