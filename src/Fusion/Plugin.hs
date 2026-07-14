@@ -1227,8 +1227,8 @@ reportInspected
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
 reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
     case lookupBinderAnn b inspectAnns of
-        Nothing -> return 0
-        Just ispec -> go ispec
+        Just ispec | not (subsumedBySameName allBinds b) -> go ispec
+        _ -> return 0
 
     where
 
@@ -1367,8 +1367,8 @@ reportInspectedClasses
     -> CoreM Int
 reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
     case lookupBinderAnn b classAnns of
-        Nothing -> return 0
-        Just ispec -> go ispec
+        Just ispec | not (subsumedBySameName allBinds b) -> go ispec
+        _ -> return 0
 
     where
 
