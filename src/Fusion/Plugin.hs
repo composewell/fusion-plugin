@@ -1108,6 +1108,43 @@ binderAnnKeys b = nm : [base | Just base <- [DL.stripPrefix "$w" nm]]
 
     nm = getOccString (GET_NAME b)
 
+-- | The source-level display name of a binder: its occurrence name with any
+-- @$w@ worker prefix stripped. The worker/wrapper transformation renames an
+-- annotated binding @f@ to a worker @$wf@; reporting it as @f@ keeps dump file
+-- names and the core-sizes CSV keyed by the original binding name.
+binderDisplayName :: CoreBndr -> String
+binderDisplayName b = fromMaybe nm (DL.stripPrefix "$w" nm)
+
+    where
+
+    nm = getOccString (GET_NAME b)
+
+-- | True if another top-level binder that shares this binder's display name
+-- (see 'binderDisplayName') already reaches it through its closure
+-- (see 'binderClosure'), which makes a separate report for it redundant.
+--
+-- A single source binding can leave several top-level binders that collapse to
+-- the same display name. Worker/wrapper splitting turns @f@ into a wrapper @f@
+-- and a worker @$wf@; exporting adds a cast wrapper on top, e.g. for an exported
+-- @drainN@ the final Core holds @drainN = drainN' \`cast\` co@, the ordinary
+-- wrapper @drainN'@, and the worker @$wdrainN@ -- three binders all displaying
+-- as @drainN@. Each outer one's closure contains the inner ones, so we report
+-- only the outermost binder (the one no same-named sibling reaches) and skip the
+-- rest, collapsing them to a single entry. When a binding leaves just one
+-- survivor (e.g. a non-exported @f@ reduced to only @$wf@) nothing reaches it
+-- and it is reported (this returns 'False').
+subsumedBySameName :: [(CoreBndr, CoreExpr)] -> CoreBndr -> Bool
+subsumedBySameName binds b = any covers binds
+
+    where
+
+    name = binderDisplayName b
+
+    covers (other, _) =
+           other /= b
+        && binderDisplayName other == name
+        && any ((== b) . fst) (binderClosure binds other)
+
 -- | Look up a per-binder annotation, accounting for worker/wrapper splitting.
 --
 -- The annotations are keyed by the source-level binder name (e.g. @f@). The
@@ -1407,8 +1444,8 @@ reportCoreSize
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
 reportCoreSize dflags reportMode dumpCoreSizes pkgName modName sizeAnns allBinds (NonRec b _) =
     case lookupBinderAnn b sizeAnns of
-        Nothing -> return 0
-        Just ann -> go ann
+        Just ann | not (subsumedBySameName allBinds b) -> go ann
+        _ -> return 0
 
     where
 
@@ -1426,12 +1463,13 @@ reportCoreSize dflags reportMode dumpCoreSizes pkgName modName sizeAnns allBinds
                         ++ show terms
                         ++ " terms (set of " ++ show (length clSet)
                         ++ " bindings)"
-        -- Append a "binding-name,core-size" row (binder name without its
-        -- unique suffix) to the per-module CSV file.
+        -- Append a "binding-name,core-size" row to the per-module CSV file. The
+        -- name is the source binding name (see 'binderDisplayName'): no unique
+        -- suffix, and no @$w@ worker prefix.
         when dumpCoreSizes $ liftIO $ do
             let path = coreSizesFile dflags pkgName modName
             createDirectoryIfMissing True (takeDirectory path)
-            appendFile path (getOccString (GET_NAME b) ++ "," ++ show terms ++ "\n")
+            appendFile path (binderDisplayName b ++ "," ++ show terms ++ "\n")
         if terms > maxSize
         then do
             putMsgS $ "fusion-plugin: "
@@ -1480,7 +1518,7 @@ writeBindCore
 writeBindCore dflags pkgName modName suffix allBinds b = do
     let dir = pluginDumpDir dflags pkgName
         path = pluginDumpStem dflags pkgName modName
-                    ++ getOccString (GET_NAME b) ++ suffix
+                    ++ binderDisplayName b ++ suffix
         closure = binderClosure allBinds b
         doc = vcat (map (ppr . uncurry NonRec) closure)
     liftIO $ do
@@ -1511,8 +1549,9 @@ reportDumpCore ::
     -> CoreBind -> CoreM ()
 reportDumpCore dflags pkgName modName dumpAnns allBinds (NonRec b _) =
     case lookupBinderAnn b dumpAnns of
-        Nothing -> return ()
-        Just _ -> dumpBindCore dflags pkgName modName allBinds b
+        Just _ | not (subsumedBySameName allBinds b) ->
+            dumpBindCore dflags pkgName modName allBinds b
+        _ -> return ()
 reportDumpCore _ _ _ _ _ (Rec _) =
     error "reportDumpCore: expecting only NonRec binders"
 
@@ -1876,7 +1915,7 @@ fusionReport
             shouldDump =
                    (dumpCoreIfAnnotated && hasViolationAnn)
                 || (dumpCoreIfViolated && n1 + n2 + n3 > 0)
-        when (runInspect && shouldDump) $
+        when (runInspect && shouldDump && not (subsumedBySameName allBinds b)) $
             dumpBindCore dflags pkgName modName allBinds b
         when (b `elemVarSet` liveBndrs) $ do
             let results = keepHeapAllocatedOnly
@@ -2221,10 +2260,10 @@ dumpCorePassesBinds ref counter title guts = do
         mapM_
             (\(b, _) ->
                 case lookupBinderAnn b dumpAnns of
-                    Nothing -> return ()
-                    Just _ ->
+                    Just _ | not (subsumedBySameName allBinds b) ->
                         dumpBindCorePass
-                            dflags counter title pkgName modName allBinds b)
+                            dflags counter title pkgName modName allBinds b
+                    _ -> return ())
             allBinds
     return guts
 
