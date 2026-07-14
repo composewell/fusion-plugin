@@ -197,7 +197,7 @@ import Fusion.Plugin.Types
 -- Each module writes a @\<module-name\>.core-sizes.csv@ file in the compiler's
 -- dump directory (see GHC's @-dumpdir@ option), or in
 -- @fusion-plugin-output\/\<package-name\>@ when no dump directory is set. The
--- file starts with a @binding-name,core-size@ header row followed by one row
+-- file starts with a @name,core-size@ header row followed by one row
 -- per annotated binding.
 --
 -- By default the CSV is truncated on each compilation so it reflects only the
@@ -1853,7 +1853,7 @@ fusionReport
                 let path = coreSizesFile dflags pkgName modName
                     writeHeader = if csvAppend then appendFile else writeFile
                 createDirectoryIfMissing True (takeDirectory path)
-                writeHeader path "binding-name,core-size\n"
+                writeHeader path "name,core-size\n"
             violations <-
                 if anyUFM (any (== Fuse)) anns || anyReport
                 then fmap sum
