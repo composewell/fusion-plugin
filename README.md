@@ -268,8 +268,9 @@ ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
 ```
 Each module then writes a `<module-name>.core-sizes.csv` file in the
 compiler's dump directory (as set by `-dumpdir`), or in
-`fusion-plugin-output/<package-name>` when no dump directory is set, with one
-`binding-name,core-size` row per annotated binding.
+`fusion-plugin-output/<package-name>` when no dump directory is set. The file
+starts with a `binding-name,core-size` header row followed by one row per
+annotated binding.
 
 This option is useful to collect the core sizes before and after a change and
 automatically report the changes in a CI.

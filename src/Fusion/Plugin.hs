@@ -1792,13 +1792,10 @@ fusionReport
             let pkgName = modulePackageName (mg_module guts)
             let modName = moduleNameString (moduleName (mg_module guts))
             let allBinds = flattenBinds (mg_binds guts)
-            -- Truncate the per-module core-sizes CSV once, before any binding
-            -- is processed, so 'reportCoreSize' can append fresh rows to it
-            -- without carrying over stale entries from a previous build.
             when (dumpCoreSizes && anyMaxCoreSize) $ liftIO $ do
                 let path = coreSizesFile dflags pkgName modName
                 createDirectoryIfMissing True (takeDirectory path)
-                writeFile path ""
+                writeFile path "binding-name,core-size\n"
             violations <-
                 if anyUFM (any (== Fuse)) anns || anyReport
                 then fmap sum
