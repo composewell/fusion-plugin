@@ -26,6 +26,8 @@
 * Fix the `dump-core` CLI option which stopped working on GHC-9.6 and
   above due to upstream API changes (`PrintUnqualified` renamed to
   `NamePprCtx`, `mkPrintUnqualified` renamed to `mkNamePprCtx`).
+* The `dump-core` CLI option now names its output files by module name
+  (`<dump-dir>/<module-name>.<NN-pass>.dump-simpl`).
 
 ## 0.2.8
 

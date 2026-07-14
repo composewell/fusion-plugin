@@ -1366,12 +1366,22 @@ pluginDumpDir :: DynFlags -> String -> FilePath
 pluginDumpDir dflags pkgName =
     fromMaybe (fallbackDumpDir pkgName) (dumpDir dflags)
 
+pluginDumpStem :: DynFlags -> String -> String -> FilePath
+pluginDumpStem dflags pkgName modName =
+    pluginDumpDir dflags pkgName </> (modName ++ ".")
+
+pluginDumpPrefix :: DynFlags -> String -> String -> FilePath
+pluginDumpPrefix dflags pkgName modName =
+    case dumpDir dflags of
+        Just _  -> modName ++ "."
+        Nothing -> fallbackDumpDir pkgName </> (modName ++ ".")
+
 -- | Path of the CSV file that 'reportCoreSize' appends core sizes to when the
 -- @dump-core-sizes@ option is set: @\<module-name\>.core-sizes.csv@ under
 -- 'pluginDumpDir'.
 coreSizesFile :: DynFlags -> String -> String -> FilePath
 coreSizesFile dflags pkgName modName =
-    pluginDumpDir dflags pkgName </> (modName ++ ".core-sizes.csv")
+    pluginDumpStem dflags pkgName modName ++ "core-sizes.csv"
 
 -- Returns 0 on no violations and 1 otherwise.
 reportCoreSize
@@ -1451,8 +1461,8 @@ writeBindCore
     -> CoreBndr -> CoreM FilePath
 writeBindCore dflags pkgName modName suffix allBinds b = do
     let dir = pluginDumpDir dflags pkgName
-        fileName = modName ++ "." ++ getOccString (GET_NAME b) ++ suffix
-        path = dir </> fileName
+        path = pluginDumpStem dflags pkgName modName
+                    ++ getOccString (GET_NAME b) ++ suffix
         closure = binderClosure allBinds b
         doc = vcat (map (ppr . uncurry NonRec) closure)
     liftIO $ do
@@ -2057,11 +2067,12 @@ dumpCoreSuffix dflags counter title = printf "%02d" counter ++ "-"
            $ showSDoc dflags title)
     ++ "."
 
-dumpCoreFileName :: DynFlags -> Int -> SDoc -> Maybe FilePath
-dumpCoreFileName dflags counter title
+dumpCoreFileName :: DynFlags -> String -> String -> Int -> SDoc -> Maybe FilePath
+dumpCoreFileName dflags pkgName modName counter title
     | not (gopt Opt_DumpToFile dflags) = Nothing
     | otherwise =
-        Just $ dumpCoreStem dflags ++ dumpCoreSuffix dflags counter title ++ "dump-simpl"
+        Just $ pluginDumpStem dflags pkgName modName
+            ++ dumpCoreSuffix dflags counter title ++ "dump-simpl"
 
 dumpResult
 #if MIN_VERSION_ghc(9,2,0)
@@ -2071,18 +2082,19 @@ dumpResult
     :: DynFlags
 #endif
     -> PRINT_UNQUAL
+    -> FilePath
     -> Int
     -> SDoc
     -> CoreProgram
     -> [CoreRule]
     -> IO ()
 #if MIN_VERSION_ghc(9,2,0)
-dumpResult logger dflags print_unqual counter todo binds rules =
-    dumpPassResult logger1 dflags print_unqual hdr (text "") binds rules
+dumpResult logger dflags print_unqual prefixOverride counter todo binds rules =
+    dumpPassResult logger1 dflags1 print_unqual hdr (text "") binds rules
 #else
-dumpResult dflags print_unqual counter todo binds rules =
+dumpResult dflags print_unqual prefixOverride counter todo binds rules =
     dumpPassResult
-        dflags print_unqual (_suffix ++ "dump-simpl") hdr (text "") binds rules
+        dflags1 print_unqual (_suffix ++ "dump-simpl") hdr (text "") binds rules
 #endif
 
     where
@@ -2095,10 +2107,16 @@ dumpResult dflags print_unqual counter todo binds rules =
     _suffix = dumpCoreSuffix dflags counter todo
 
 #if MIN_VERSION_ghc(9,4,0)
-    prefix = log_dump_prefix (logFlags logger) ++ _suffix
-    logger1 = logger {logFlags = (logFlags logger) {log_dump_prefix = prefix}}
+    dflags1 = dflags
+    logger1 =
+        logger
+            { logFlags =
+                (logFlags logger) {log_dump_prefix = prefixOverride ++ _suffix} }
 #elif MIN_VERSION_ghc(9,2,0)
+    dflags1 = dflags {dumpPrefixForce = Just prefixOverride}
     logger1 = logger
+#else
+    dflags1 = dflags {dumpPrefixForce = Just prefixOverride}
 #endif
 #endif
 
@@ -2107,7 +2125,10 @@ dumpCore counter title guts = do
     dflags <- getDynFlags
     let passMsg = show counter ++ " " ++ showSDoc dflags title
 #if __GLASGOW_HASKELL__!=900
-    let fileMsg = case dumpCoreFileName dflags counter title of
+    let pkgName = modulePackageName (mg_module guts)
+        modName = moduleNameString (moduleName (mg_module guts))
+        prefixOverride = pluginDumpPrefix dflags pkgName modName
+    let fileMsg = case dumpCoreFileName dflags pkgName modName counter title of
             Just f  -> takeFileName f
             Nothing -> "stdout (" ++ passMsg ++ ")"
 #else
@@ -2124,47 +2145,38 @@ dumpCore counter title guts = do
             }
     let print_unqual =
             mkNamePprCtx ptc (hsc_unit_env hscEnv) (mg_rdr_env guts)
-    liftIO $ dumpResult logger dflags print_unqual counter
+    liftIO $ dumpResult logger dflags print_unqual prefixOverride counter
                 title (mg_binds guts) (mg_rules guts)
 #elif MIN_VERSION_ghc(9,2,0)
     hscEnv <- getHscEnv
     let logger = hsc_logger hscEnv
     let print_unqual =
             mkPrintUnqualified (hsc_unit_env hscEnv) (mg_rdr_env guts)
-    liftIO $ dumpResult logger dflags print_unqual counter
+    liftIO $ dumpResult logger dflags print_unqual prefixOverride counter
                 title (mg_binds guts) (mg_rules guts)
 #elif MIN_VERSION_ghc(9,0,0)
     putMsgS $ "fusion-plugin: dump-core not supported on GHC 9.0 "
 #else
     let print_unqual = mkPrintUnqualified dflags (mg_rdr_env guts)
-    liftIO $ dumpResult dflags print_unqual counter
+    liftIO $ dumpResult dflags print_unqual prefixOverride counter
                 title (mg_binds guts) (mg_rules guts)
 #endif
     return guts
 
-dumpCoreStem :: DynFlags -> FilePath
-dumpCoreStem dflags = dir </> prefix
-
-    where
-
-    dir = fromMaybe "." (dumpDir dflags)
-#if MIN_VERSION_ghc(9,4,0)
-    prefix = fromMaybe (dumpPrefix dflags) (dumpPrefixForce dflags)
-#else
-    prefix = fromMaybe (fromMaybe "" (dumpPrefix dflags)) (dumpPrefixForce dflags)
-#endif
-
-dumpCoreLocationMsg :: DynFlags -> String
-dumpCoreLocationMsg dflags
+dumpCoreLocationMsg :: DynFlags -> String -> String -> String
+dumpCoreLocationMsg dflags pkgName modName
     | not (gopt Opt_DumpToFile dflags) =
         "stdout (pass -ddump-to-file to write dump files instead)"
-    | otherwise = dumpCoreStem dflags ++ "*"
+    | otherwise = pluginDumpStem dflags pkgName modName ++ "*"
 
 dumpCoreLocationPass :: CoreToDo
 dumpCoreLocationPass =
     CoreDoPluginPass "report dump-core location" $ \guts -> do
         dflags <- getDynFlags
-        putMsgS $ "fusion-plugin: dumped core to " ++ dumpCoreLocationMsg dflags
+        let pkgName = modulePackageName (mg_module guts)
+            modName = moduleNameString (moduleName (mg_module guts))
+        putMsgS $ "fusion-plugin: dumped core to "
+            ++ dumpCoreLocationMsg dflags pkgName modName
         return guts
 
 -------------------------------------------------------------------------------

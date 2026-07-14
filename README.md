@@ -283,6 +283,11 @@ core-to-core transformation. Output from each transformation is printed
 in a different file. This is useful to examine where an optimization failed or
 occurred.
 
+The files are written under the compiler's dump directory
+as set by `-dumpdir`, or `fusion-plugin-output/<package-name>`
+otherwise.  Each pass adds a `<NN-pass-name>.dump-simpl` suffix, e.g.
+`Stream.Type.Basic.07-After-simplifier.dump-simpl`.
+
 ### Examining Before and After Core
 
 `dump-core-if-annotated` option dumps the core of every binding
