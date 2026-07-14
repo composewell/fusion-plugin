@@ -4,6 +4,8 @@
   * `FuseTypes`: mark specified types fusible within a specific binding.
   * `NoFuseTypes`: disable `Fuse` annotations on the specified types
     within a specific binding.
+  * `NoFuse`: disable forced inlining within a specific binding
+    altogether, irrespective of type.
   * `InspectTypes`: Forbid or permit existence of given types within a
     binding.
   * `InspectTypeClasses`: Forbid or permit existence of given type

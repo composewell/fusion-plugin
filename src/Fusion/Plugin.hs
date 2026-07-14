@@ -440,6 +440,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #define INSPECT_CLASSES_FM Map.Map String InspectTypeClasses
 #define FUSE_TYPES_FM Map.Map String FuseTypes
 #define NO_FUSE_TYPES_FM Map.Map String NoFuseTypes
+#define NO_FUSE_FM Map.Map String NoFuse
 #define MAX_CORE_SIZE_FM Map.Map String MaxCoreSize
 #define DUMP_CORE_FM Map.Map String DumpCore
 
@@ -902,6 +903,12 @@ removeFuseTypes anns noFuseTypesAnns b =
         Just (NoFuseTypes ns) -> do
             names <- resolveTHNames ns
             return $ delListFromUFM anns names
+
+removeFuse :: UNIQ_FM -> NO_FUSE_FM -> CoreBndr -> UNIQ_FM
+removeFuse anns noFuseAnns b =
+    case Map.lookup (getOccString (GET_NAME b)) noFuseAnns of
+        Nothing -> anns
+        Just NoFuse -> emptyUFM
 
 -- | Build the "isInteresting" predicate, the exclusion list, and the position
 -- filter for a given 'InspectTypes' directive. The position filter selects
@@ -1473,6 +1480,8 @@ markInline pass reportMode transform guts = do
         getAnnotationsByStableName "FuseTypes" deserializeWithData guts
     noFuseTypesAnns <-
         getAnnotationsByStableName "NoFuseTypes" deserializeWithData guts
+    noFuseAnns <-
+        getAnnotationsByStableName "NoFuse" deserializeWithData guts
     let pkgName = modulePackageName (mg_module guts)
         modName = moduleNameString (moduleName (mg_module guts))
         modBinds = flattenBinds (mg_binds guts)
@@ -1481,25 +1490,30 @@ markInline pass reportMode transform guts = do
         r <- bindsOnlyPass
                 (mapM
                     (transformBind
-                        dflags anns fuseTypesAnns noFuseTypesAnns
+                        dflags anns fuseTypesAnns noFuseTypesAnns noFuseAnns
                         pkgName modName modBinds))
                 guts
         if dbgLevel > 0
         then dumpCore 0 (text ("Fusion-plugin-" ++ show pass)) r
         else return r
     else return guts
-  where
+
+    where
+
     -- transformBind :: DynFlags -> UniqFM Unique [Fuse] -> CoreBind -> CoreM CoreBind
     transformBind
-            dflags anns0 fuseTypesAnns noFuseTypesAnns
+            dflags anns0 fuseTypesAnns noFuseTypesAnns noFuseAnns
             pkgName modName modBinds bind@(NonRec b _) = do
         -- Types named in a 'FuseTypes' annotation on this binding act as if
         -- they were 'Fuse'-annotated, but only while inlining inside it.
         -- Types named in a 'NoFuseTypes' annotation are stripped of their
         -- 'Fuse' status locally, overriding the above and any module-wide
-        -- 'Fuse' annotation for this binding only.
+        -- 'Fuse' annotation for this binding only. A 'NoFuse' annotation
+        -- overrides all of the above, disabling forced inlining for this
+        -- binding altogether irrespective of type.
         anns1 <- augmentFuseTypes anns0 fuseTypesAnns b
-        anns <- removeFuseTypes anns1 noFuseTypesAnns b
+        anns2 <- removeFuseTypes anns1 noFuseTypesAnns b
+        let anns = removeFuse anns2 noFuseAnns b
         let (blockedPat, patternMatches) =
                 partitionEithers (letBndrsThatAreCases dflags anns bind)
         let uniqPat = DL.nub (map (getNonRecBinder. head . fst) patternMatches)
@@ -1559,13 +1573,15 @@ markInline pass reportMode transform guts = do
         return bind'
 
     transformBind
-            dflags anns fuseTypesAnns noFuseTypesAnns
+            dflags anns fuseTypesAnns noFuseTypesAnns noFuseAnns
             pkgName modName modBinds (Rec bs) = do
         fmap Rec (mapM transformAsNonRec bs)
-      where
+
+        where
+
         transformAsNonRec (b, expr) = do
             r <- transformBind
-                    dflags anns fuseTypesAnns noFuseTypesAnns
+                    dflags anns fuseTypesAnns noFuseTypesAnns noFuseAnns
                     pkgName modName modBinds (NonRec b expr)
             case r of
                 NonRec b1 expr1 -> return (b1, expr1)

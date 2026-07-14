@@ -106,6 +106,19 @@ import Fusion.Plugin.Types (NoFuseTypes(..))
 myFunction :: ...
 ```
 
+`NoFuse` is the blanket form of `NoFuseTypes`: instead of listing types,
+annotate the *binding* with `NoFuse` from `Fusion.Plugin.Types` to disable
+forced inlining for that binding altogether, regardless of which types are
+involved. This overrides any module-wide `Fuse` annotation and any
+`FuseTypes`/`NoFuseTypes` on the same binding:
+
+```haskell
+import Fusion.Plugin.Types (NoFuse(..))
+
+{-# ANN myFunction NoFuse #-}
+myFunction :: ...
+```
+
 ## Annotations to Verify Fusion
 
 ### Inspecting Boxed Types within a Function
