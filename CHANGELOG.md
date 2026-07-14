@@ -23,6 +23,8 @@
     `InspectTypeClasses` or `MaxCoreSize`),
   * `dump-core-if-violated`: if a violation occurs write the core of the
     binding to a file.
+  * `csv-append`: append to the `core-sizes.csv` files (a header row plus
+    the run's rows) instead of truncating them on each compilation.
 * Fix the `dump-core` CLI option which stopped working on GHC-9.6 and
   above due to upstream API changes (`PrintUnqualified` renamed to
   `NamePprCtx`, `mkPrintUnqualified` renamed to `mkNamePprCtx`).

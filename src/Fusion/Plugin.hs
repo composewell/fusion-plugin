@@ -196,8 +196,18 @@ import Fusion.Plugin.Types
 --
 -- Each module writes a @\<module-name\>.core-sizes.csv@ file in the compiler's
 -- dump directory (see GHC's @-dumpdir@ option), or in
--- @fusion-plugin-output\/\<package-name\>@ when no dump directory is set, with
--- one @binding-name,core-size@ row per annotated binding.
+-- @fusion-plugin-output\/\<package-name\>@ when no dump directory is set. The
+-- file starts with a @binding-name,core-size@ header row followed by one row
+-- per annotated binding.
+--
+-- By default the CSV is truncated on each compilation so it reflects only the
+-- latest build. Pass @csv-append@ to instead keep the existing file and append
+-- each run's header and rows to it, accumulating the results of successive
+-- builds in one file (useful for comparing core sizes across changes):
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes -fplugin-opt=Fusion.Plugin:csv-append
+-- @
 --
 -- To dump the Core of every binding that carries a violation-causing
 -- annotation ('InspectTypes', 'InspectTypeClasses' or 'MaxCoreSize'), pass
@@ -298,6 +308,7 @@ data Options = Options
     , optionsDumpCoreIfViolated :: Bool
     , optionsVerbosityLevel :: ReportMode
     , optionsWError :: Bool
+    , optionsCsvAppend :: Bool
     } deriving Show
 
 defaultOptions :: Options
@@ -308,6 +319,7 @@ defaultOptions = Options
     , optionsDumpCoreIfViolated = False
     , optionsVerbosityLevel = ReportSilent
     , optionsWError = False
+    , optionsCsvAppend = False
     }
 
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
@@ -336,6 +348,11 @@ setWError :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setWError val = do
     (args, opts) <- get
     put (args, opts { optionsWError = val })
+
+setCsvAppend :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setCsvAppend val = do
+    (args, opts) <- get
+    put (args, opts { optionsCsvAppend = val })
 
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
@@ -367,6 +384,7 @@ parseOptions args =
             "dump-core-if-annotated" -> setDumpCoreIfAnnotated True
             "dump-core-if-violated" -> setDumpCoreIfViolated True
             "werror" -> setWError True
+            "csv-append" -> setCsvAppend True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1
@@ -1753,11 +1771,11 @@ failOnUnmatchedAnns dflags pkgName modName allTopBinds allBinds
 -- annotation-check violation ('InspectTypes', 'InspectTypeClasses' or
 -- 'MaxCoreSize') was found.
 fusionReport
-    :: String -> ReportMode -> Bool -> Bool -> Bool -> Bool -> Bool -> ModGuts
-    -> CoreM ModGuts
+    :: String -> ReportMode -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool
+    -> ModGuts -> CoreM ModGuts
 fusionReport
         mesg reportMode runInspect werror dumpCoreSizes dumpCoreIfAnnotated
-        dumpCoreIfViolated guts = do
+        dumpCoreIfViolated csvAppend guts = do
     inspectAnns <-
         if runInspect
         then getAnnotationsByStableName "InspectTypes" deserializeWithData guts
@@ -1794,8 +1812,9 @@ fusionReport
             let allBinds = flattenBinds (mg_binds guts)
             when (dumpCoreSizes && anyMaxCoreSize) $ liftIO $ do
                 let path = coreSizesFile dflags pkgName modName
+                    writeHeader = if csvAppend then appendFile else writeFile
                 createDirectoryIfMissing True (takeDirectory path)
-                writeFile path "binding-name,core-size\n"
+                writeHeader path "binding-name,core-size\n"
             violations <-
                 if anyUFM (any (== Fuse)) anns || anyReport
                 then fmap sum
@@ -2353,7 +2372,8 @@ install args todos
                 -- inlining and case-of-case transformations.
                 , let mesg = "Check unfused (post inlining)"
                   in CoreDoPluginPass mesg
-                        (fusionReport mesg ReportSilent False False False False False)
+                        (fusionReport
+                            mesg ReportSilent False False False False False False)
                 ]
                 (let mesg = "Check unfused (final)"
                      report =
@@ -2362,6 +2382,7 @@ install args todos
                             (optionsWError options) (optionsDumpCoreSizes options)
                             (optionsDumpCoreIfAnnotated options)
                             (optionsDumpCoreIfViolated options)
+                            (optionsCsvAppend options)
                 in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]

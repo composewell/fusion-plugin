@@ -275,6 +275,13 @@ annotated binding.
 This option is useful to collect the core sizes before and after a change and
 automatically report the changes in a CI.
 
+By default the CSV is truncated on each compilation. Pass `csv-append` to keep
+the existing file and append each run's header and rows instead, accumulating
+successive builds in one file:
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes -fplugin-opt=Fusion.Plugin:csv-append
+```
+
 ### Examining Optimization Passes
 
 Note: dump-core does not work for GHC-9.0.x.
