@@ -12,6 +12,9 @@
     classe dictionaries within a binding.
   * `MaxCoreSize`: report the size of the optimized Core of a binding.
   * `DumpCore`: write the core of a specific binding to a file.
+  * `DumpCorePasses`: write the core of a specific binding to a file
+    after every Core-to-core pass (the per-binding counterpart of the
+    `dump-core` CLI option).
 * Added the following CLI options:
   * `dump-core-sizes`: the core size of every annotated binding is
     appended to a file.

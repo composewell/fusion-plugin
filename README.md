@@ -229,6 +229,17 @@ file in the compiler's dump directory (as set by `-dumpdir`), or under
 myFunction :: ...
 ```
 
+To understand how the core of a function evolves through the optimizer, use the
+`DumpCorePasses` annotation. It is the per-binding counterpart of the
+`dump-core` option (see [Examining Optimization Passes](#examining-optimization-passes)).
+Instead of dumping the whole module after each pass it dumps only the annotated
+binding, writing one file per pass named
+`<module>.<binding>.<NN-pass>.dump-simpl`:
+```haskell
+{-# ANN myFunction DumpCorePasses #-}
+myFunction :: ...
+```
+
 ## Compiling Code with the Plugin
 
 To make the fusion annotations do the actual work you need to compile

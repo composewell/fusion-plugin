@@ -51,7 +51,8 @@ where
 
 #if MIN_VERSION_ghc(8,6,0)
 -- Imports for all compiler versions
-import Control.Monad (when, unless)
+import Control.Monad (when, unless, forM_, void)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Control.Monad.Trans.State (StateT, evalStateT, get, put)
 import Data.Char (isDigit)
 import Data.Data (Data)
@@ -448,6 +449,7 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #define NO_FUSE_FM Map.Map String NoFuse
 #define MAX_CORE_SIZE_FM Map.Map String MaxCoreSize
 #define DUMP_CORE_FM Map.Map String DumpCore
+#define DUMP_CORE_PASSES_FM Map.Map String DumpCorePasses
 
 -- GHC-9.6 renamed 'PrintUnqualified' to 'NamePprCtx'.
 #if MIN_VERSION_ghc(9,6,0)
@@ -1444,21 +1446,34 @@ modulePackageName =
         . unitIdString . moduleUnitId
 #endif
 
-dumpBindCore
-    :: DynFlags -> String -> String -> [(CoreBndr, CoreExpr)] -> CoreBndr
-    -> CoreM ()
-dumpBindCore dflags pkgName modName allBinds b = do
+writeBindCore
+    :: DynFlags -> String -> String -> String -> [(CoreBndr, CoreExpr)]
+    -> CoreBndr -> CoreM FilePath
+writeBindCore dflags pkgName modName suffix allBinds b = do
     let dir = pluginDumpDir dflags pkgName
-        fileName =
-            modName ++ "." ++ getOccString (GET_NAME b) ++ ".dump-simpl"
+        fileName = modName ++ "." ++ getOccString (GET_NAME b) ++ suffix
         path = dir </> fileName
         closure = binderClosure allBinds b
         doc = vcat (map (ppr . uncurry NonRec) closure)
     liftIO $ do
         createDirectoryIfMissing True dir
         writeFile path (showSDoc dflags doc ++ "\n")
+    return path
+
+dumpBindCore
+    :: DynFlags -> String -> String -> [(CoreBndr, CoreExpr)] -> CoreBndr
+    -> CoreM ()
+dumpBindCore dflags pkgName modName allBinds b = do
+    path <- writeBindCore dflags pkgName modName ".dump-simpl" allBinds b
     putMsgS $ "fusion-plugin: "
             ++ showWithUnique dflags b ++ ": dumped core to " ++ path
+
+dumpBindCorePass
+    :: DynFlags -> Int -> SDoc -> String -> String
+    -> [(CoreBndr, CoreExpr)] -> CoreBndr -> CoreM ()
+dumpBindCorePass dflags counter title pkgName modName allBinds b =
+    void $ writeBindCore dflags pkgName modName
+        ("." ++ dumpCoreSuffix dflags counter title ++ "dump-simpl") allBinds b
 
 -- | If the given top level bind's own binder carries a 'DumpCore' annotation,
 -- write the Core of that binding to a file (see 'dumpBindCore'). No-op if the
@@ -2127,10 +2142,6 @@ dumpCore counter title guts = do
 #endif
     return guts
 
-dumpCorePass :: Int -> SDoc -> CoreToDo
-dumpCorePass counter title =
-    CoreDoPluginPass "dump core" (dumpCore counter title)
-
 dumpCoreStem :: DynFlags -> FilePath
 dumpCoreStem dflags = dir </> prefix
 
@@ -2149,20 +2160,79 @@ dumpCoreLocationMsg dflags
         "stdout (pass -ddump-to-file to write dump files instead)"
     | otherwise = dumpCoreStem dflags ++ "*"
 
-_insertDumpCore :: [CoreToDo] -> [CoreToDo]
-_insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
-  where
-    go _ [] = []
-    go counter (todo:rest) =
-        todo : dumpCorePass counter (text "After " GhcPlugins.<> ppr todo)
-             : go (counter + 1) rest
-
 dumpCoreLocationPass :: CoreToDo
 dumpCoreLocationPass =
     CoreDoPluginPass "report dump-core location" $ \guts -> do
         dflags <- getDynFlags
         putMsgS $ "fusion-plugin: dumped core to " ++ dumpCoreLocationMsg dflags
         return guts
+
+-------------------------------------------------------------------------------
+-- Per-binding per-pass core dump (the 'DumpCorePasses' annotation)
+-------------------------------------------------------------------------------
+
+dumpCorePassesBinds
+    :: IORef (Maybe (DUMP_CORE_PASSES_FM)) -> Int -> SDoc -> ModGuts
+    -> CoreM ModGuts
+dumpCorePassesBinds ref counter title guts = do
+    cached <- liftIO $ readIORef ref
+    dumpAnns <- case cached of
+        Just anns -> return anns
+        Nothing -> do
+            anns <-
+                getAnnotationsByStableName
+                    "DumpCorePasses" deserializeWithData guts
+            liftIO $ writeIORef ref (Just anns)
+            return anns
+    unless (Map.null dumpAnns) $ do
+        dflags <- getDynFlags
+        let pkgName = modulePackageName (mg_module guts)
+            modName = moduleNameString (moduleName (mg_module guts))
+            allBinds = flattenBinds (mg_binds guts)
+        mapM_
+            (\(b, _) ->
+                case lookupBinderAnn b dumpAnns of
+                    Nothing -> return ()
+                    Just _ ->
+                        dumpBindCorePass
+                            dflags counter title pkgName modName allBinds b)
+            allBinds
+    return guts
+
+dumpCorePassesLocationPass :: IORef (Maybe (DUMP_CORE_PASSES_FM)) -> CoreToDo
+dumpCorePassesLocationPass ref =
+    CoreDoPluginPass "report DumpCorePasses location" $ \guts -> do
+        dflags <- getDynFlags
+        cached <- liftIO $ readIORef ref
+        let dumpAnns = fromMaybe Map.empty cached
+            pkgName = modulePackageName (mg_module guts)
+            modName = moduleNameString (moduleName (mg_module guts))
+            dir = pluginDumpDir dflags pkgName
+        forM_ (Map.keys dumpAnns) $ \name ->
+            putMsgS $ "fusion-plugin: dumped per-pass core for " ++ name
+                ++ " to " ++ (dir </> (modName ++ "." ++ name ++ ".*.dump-simpl"))
+        return guts
+
+insertDumpPasses
+    :: Bool -> IORef (Maybe (DUMP_CORE_PASSES_FM)) -> [CoreToDo] -> [CoreToDo]
+insertDumpPasses dumpWhole ref todos =
+    dumpPass 0 (text "Initial ")
+        : go 1 todos
+        ++ [dumpCoreLocationPass | dumpWhole]
+        ++ [dumpCorePassesLocationPass ref]
+
+    where
+
+    dumpPass counter title =
+        CoreDoPluginPass "fusion-plugin dump core" $ \guts -> do
+            when dumpWhole $ void $ dumpCore counter title guts
+            dumpCorePassesBinds ref counter title guts
+
+    go _ [] = []
+    go counter (todo:rest) =
+        todo
+            : dumpPass counter (text "After " GhcPlugins.<> ppr todo)
+            : go (counter + 1) rest
 
 -------------------------------------------------------------------------------
 -- Install our plugin core pass
@@ -2220,6 +2290,7 @@ install args todos
         options <- liftIO $ parseOptions args
         dflags <- getDynFlags
         hscEnv <- getHscEnv
+        dumpPassesRef <- liftIO $ newIORef Nothing
 #if MIN_VERSION_ghc(9,14,0)
         let hpt = ue_hpt (hsc_unit_env hscEnv)
         home_pkg_rules <- liftIO $  concatHpt (md_rules . hm_details) hpt
@@ -2255,9 +2326,7 @@ install args todos
         --
         -- TODO do not run simplify if we did not do anything in markInline phase.
         return $
-            (if optionsDumpCore options
-             then (++ [dumpCoreLocationPass]) . _insertDumpCore
-             else id) $
+            insertDumpPasses (optionsDumpCore options) dumpPassesRef $
             insertAfterSimplPhase0
                 todos
                 [ fusionPluginMarker
