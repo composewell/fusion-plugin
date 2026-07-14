@@ -1531,7 +1531,7 @@ markInline pass reportMode transform guts = do
                         pkgName modName modBinds))
                 guts
         if dbgLevel > 0
-        then dumpCore 0 (text ("Fusion-plugin-" ++ show pass)) r
+        then dumpCore True 0 (text ("Fusion-plugin-" ++ show pass)) r
         else return r
     else return guts
 
@@ -2120,8 +2120,8 @@ dumpResult dflags print_unqual prefixOverride counter todo binds rules =
 #endif
 #endif
 
-dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
-dumpCore counter title guts = do
+dumpCore :: Bool -> Int -> SDoc -> ModGuts -> CoreM ModGuts
+dumpCore verbose counter title guts = do
     dflags <- getDynFlags
     let passMsg = show counter ++ " " ++ showSDoc dflags title
 #if __GLASGOW_HASKELL__!=900
@@ -2134,7 +2134,8 @@ dumpCore counter title guts = do
 #else
     let fileMsg = "stdout (" ++ passMsg ++ ")"
 #endif
-    putMsgS $ "fusion-plugin: dumping core pass result to " ++ fileMsg
+    when verbose $
+        putMsgS $ "fusion-plugin: dumping core pass result to " ++ fileMsg
 
 #if MIN_VERSION_ghc(9,6,0)
     hscEnv <- getHscEnv
@@ -2226,8 +2227,9 @@ dumpCorePassesLocationPass ref =
         return guts
 
 insertDumpPasses
-    :: Bool -> IORef (Maybe (DUMP_CORE_PASSES_FM)) -> [CoreToDo] -> [CoreToDo]
-insertDumpPasses dumpWhole ref todos =
+    :: Bool -> Bool -> IORef (Maybe (DUMP_CORE_PASSES_FM)) -> [CoreToDo]
+    -> [CoreToDo]
+insertDumpPasses verbose dumpWhole ref todos =
     dumpPass 0 (text "Initial ")
         : go 1 todos
         ++ [dumpCoreLocationPass | dumpWhole]
@@ -2237,7 +2239,7 @@ insertDumpPasses dumpWhole ref todos =
 
     dumpPass counter title =
         CoreDoPluginPass "fusion-plugin dump core" $ \guts -> do
-            when dumpWhole $ void $ dumpCore counter title guts
+            when dumpWhole $ void $ dumpCore verbose counter title guts
             dumpCorePassesBinds ref counter title guts
 
     go _ [] = []
@@ -2338,7 +2340,9 @@ install args todos
         --
         -- TODO do not run simplify if we did not do anything in markInline phase.
         return $
-            insertDumpPasses (optionsDumpCore options) dumpPassesRef $
+            insertDumpPasses
+                (optionsVerbosityLevel options /= ReportSilent)
+                (optionsDumpCore options) dumpPassesRef $
             insertAfterSimplPhase0
                 todos
                 [ fusionPluginMarker
