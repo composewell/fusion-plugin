@@ -83,6 +83,11 @@ import GHC.Unit.Module.ModDetails (ModDetails(..))
 #endif
 
 #if MIN_VERSION_ghc(9,6,0)
+import Data.Char (isSpace)
+import Text.Printf (printf)
+import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
+import GHC.Types.Name.Ppr (mkNamePprCtx)
+import GHC.Utils.Logger (Logger)
 #elif MIN_VERSION_ghc(9,2,0)
 import Data.Char (isSpace)
 import Text.Printf (printf)
@@ -92,8 +97,7 @@ import GHC.Utils.Logger (Logger)
 #endif
 
 -- dump-core option related imports
-#if MIN_VERSION_ghc(9,6,0)
-#elif MIN_VERSION_ghc(9,3,0)
+#if MIN_VERSION_ghc(9,3,0)
 import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
 #elif MIN_VERSION_ghc(9,2,0)
 import GHC.Utils.Logger (putDumpMsg)
@@ -116,6 +120,7 @@ import qualified Data.Set as Set
 -- Implicit imports
 #if MIN_VERSION_ghc(9,6,0)
 import GHC.Plugins
+import qualified GHC.Plugins as GhcPlugins
 #elif MIN_VERSION_ghc(9,0,0)
 import GHC.Plugins
 import qualified GHC.Plugins as GhcPlugins
@@ -179,7 +184,7 @@ import Fusion.Plugin.Types
 -- @
 -- Output from each transformation is then printed in a different file.
 --
--- Note: @dump-core@ does not work for GHC-9.0.x, 9.6.x and 9.8.x.
+-- Note: @dump-core@ does not work for GHC-9.0.x.
 --
 -- To record the optimized core size of every 'MaxCoreSize'-annotated binding
 -- to a CSV file, pass the following:
@@ -443,6 +448,13 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #define NO_FUSE_FM Map.Map String NoFuse
 #define MAX_CORE_SIZE_FM Map.Map String MaxCoreSize
 #define DUMP_CORE_FM Map.Map String DumpCore
+
+-- GHC-9.6 renamed 'PrintUnqualified' to 'NamePprCtx'.
+#if MIN_VERSION_ghc(9,6,0)
+#define PRINT_UNQUAL NamePprCtx
+#else
+#define PRINT_UNQUAL PrintUnqualified
+#endif
 
 hasInlineBinder :: CoreBndr -> Bool
 hasInlineBinder bndr =
@@ -1962,15 +1974,14 @@ dumpSDoc dflags print_unqual
   where dump_style = mkDumpStyle dflags print_unqual
 #endif
 
--- XXX Need to fix for GHC-9.6 and above
 -- dump core not supported on 9.0.0, 9.0.0 does not export Logger
-#if __GLASGOW_HASKELL__!=900 && !MIN_VERSION_ghc(9,6,0)
+#if __GLASGOW_HASKELL__!=900
 -- Only for GHC versions >= 9.2.0
 #if MIN_VERSION_ghc(9,2,0)
 dumpPassResult ::
       Logger
    -> DynFlags
-   -> PrintUnqualified
+   -> PRINT_UNQUAL
    -> SDoc                  -- Header
    -> SDoc                  -- Extra info to appear after header
    -> CoreProgram -> [CoreRule]
@@ -1995,7 +2006,7 @@ dumpPassResult logger dflags unqual hdr extra_info binds rules = do
 #else
 
 dumpPassResult :: DynFlags
-               -> PrintUnqualified
+               -> PRINT_UNQUAL
                -> FilePath
                -> SDoc                  -- Header
                -> SDoc                  -- Extra info to appear after header
@@ -2029,7 +2040,7 @@ dumpResult
 #else
     :: DynFlags
 #endif
-    -> PrintUnqualified
+    -> PRINT_UNQUAL
     -> Int
     -> SDoc
     -> CoreProgram
@@ -2066,14 +2077,24 @@ dumpResult dflags print_unqual counter todo binds rules =
 #endif
 #endif
 
-#if !MIN_VERSION_ghc(9,6,0)
 dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
 dumpCore counter title guts = do
     dflags <- getDynFlags
     putMsgS $ "fusion-plugin: dumping core "
         ++ show counter ++ " " ++ showSDoc dflags title
 
-#if MIN_VERSION_ghc(9,2,0)
+#if MIN_VERSION_ghc(9,6,0)
+    hscEnv <- getHscEnv
+    let logger = hsc_logger hscEnv
+    let ptc = PromTickCtx
+            { ptcListTuplePuns = False
+            , ptcPrintRedundantPromTicks = False
+            }
+    let print_unqual =
+            mkNamePprCtx ptc (hsc_unit_env hscEnv) (mg_rdr_env guts)
+    liftIO $ dumpResult logger dflags print_unqual counter
+                title (mg_binds guts) (mg_rules guts)
+#elif MIN_VERSION_ghc(9,2,0)
     hscEnv <- getHscEnv
     let logger = hsc_logger hscEnv
     let print_unqual =
@@ -2100,13 +2121,6 @@ _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
     go counter (todo:rest) =
         todo : dumpCorePass counter (text "After " GhcPlugins.<> ppr todo)
              : go (counter + 1) rest
-#else
-dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
-dumpCore _counter _title guts = return guts
-
-_insertDumpCore :: [CoreToDo] -> [CoreToDo]
-_insertDumpCore = id
-#endif
 
 -------------------------------------------------------------------------------
 -- Install our plugin core pass

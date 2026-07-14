@@ -20,6 +20,9 @@
     `InspectTypeClasses` or `MaxCoreSize`),
   * `dump-core-if-violated`: if a violation occurs write the core of the
     binding to a file.
+* Fix the `dump-core` CLI option which stopped working on GHC-9.6 and
+  above due to upstream API changes (`PrintUnqualified` renamed to
+  `NamePprCtx`, `mkPrintUnqualified` renamed to `mkNamePprCtx`).
 
 ## 0.2.8
 
