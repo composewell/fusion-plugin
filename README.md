@@ -108,7 +108,7 @@ myFunction :: ...
 
 ## Annotations to Verify Fusion
 
-### Inspecting Types within a Function
+### Inspecting Boxed Types within a Function
 
 To verify elimination of certain types within a function annotate the
 function with `InspectTypes`. If a violation is found the plugin will complain
@@ -206,16 +206,6 @@ This prints a line such as:
 fusion-plugin: myFunction: core size (1361 terms) exceeds the specified size (1000 terms).
 ```
 
-To record the core size of every `MaxCoreSize`-annotated binding to a file,
-pass the `dump-core-sizes` option:
-```
-ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
-```
-Each module then writes a `<module-name>.core-sizes.csv` file in the
-compiler's dump directory (as set by `-dumpdir`), or in
-`fusion-plugin-output/<package-name>` when no dump directory is set, with one
-`binding-name,core-size` row per annotated binding.
-
 ### Generating Core of a Function
 
 Use `DumpCore` annotation to write the final simplified core of a function to a
@@ -226,23 +216,7 @@ file in the compiler's dump directory (as set by `-dumpdir`), or under
 myFunction :: ...
 ```
 
-Alternatively, pass the `dump-core-if-annotated` option to automatically dump the
-core of every binding that carries a violation-causing annotation
-(`InspectTypes`, `InspectTypeClasses` or `MaxCoreSize`), without adding a
-`DumpCore` annotation to each one:
-```
-ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-annotated
-```
-
-Use `dump-core-if-violated` instead to dump the core of only those annotated
-bindings for which a check actually reported a violation:
-```
-ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-violated
-```
-
-You can examine the core to find the reported violations.
-
-### Compilation
+## Compiling Code with the Plugin
 
 To make the fusion annotations do the actual work you need to compile
 your code with the fusion-plugin added to GHC during compilation. To do
@@ -250,19 +224,62 @@ that add this package to the `build-depends` in the cabal file of the
 package to be compiled and use the following ghc options:
 `ghc-options: -O2 -fplugin=Fusion.Plugin`
 
-### Plugin options
+## Plugin options
 
-Note: dump-core does not work for GHC-9.0.x, 9.6.x and 9.8.x.
-
-`-fplugin-opt=Fusion.Plugin:dump-core`: dump core after each
-core-to-core transformation. Output from each transformation is printed
-in a different file.
+### Finding fusion violations
 
 `-fplugin-opt=Fusion.Plugin:verbose=1`: report unfused functions. Verbosity
 levels `2`, `3`, `4` can be used for more verbose output.
 
 `-fplugin-opt=Fusion.Plugin:werror`: treat annotation-check violations as
-errors instead of warnings.
+errors instead of warnings. This option is useful in CI builds to fail on
+violation.
+
+### Detecting code bloat
+
+To record the core size of every `MaxCoreSize`-annotated binding to a file,
+pass the `dump-core-sizes` option:
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
+```
+Each module then writes a `<module-name>.core-sizes.csv` file in the
+compiler's dump directory (as set by `-dumpdir`), or in
+`fusion-plugin-output/<package-name>` when no dump directory is set, with one
+`binding-name,core-size` row per annotated binding.
+
+This option is useful to collect the core sizes before and after a change and
+automatically report the changes in a CI.
+
+### Examining Optimization Passes
+
+Note: dump-core does not work for GHC-9.0.x, 9.6.x and 9.8.x.
+
+`-fplugin-opt=Fusion.Plugin:dump-core`: dump core after each
+core-to-core transformation. Output from each transformation is printed
+in a different file. This is useful to examine where an optimization failed or
+occurred.
+
+### Examining Before and After Core
+
+`dump-core-if-annotated` option dumps the core of every binding
+that carries a violation-causing annotation (`InspectTypes`,
+`InspectTypeClasses` or `MaxCoreSize`), without adding a `DumpCore`
+annotation to each one:
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-annotated
+```
+
+Use `dump-core-if-violated` to dump the core of those annotated
+bindings for which a check actually reported a violation:
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-violated
+```
+
+This option is useful to examine the core to find the reported
+violations. `dump-core-if-annotated` can be used in a baseline CI build
+to dump cores of all annotated bindings, and the `dump-core-if-violated`
+can be used to dump cores of violations in a changed build which can be
+diffed against the baseline cores.
 
 ## See also
 

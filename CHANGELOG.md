@@ -1,20 +1,23 @@
 ## Unreleased
 
-* Add the following annotations:
-  * `FuseTypes`: mark types fusible within a specific binding.
-  * `NoFuseTypes`: disable `Fuse` annotation within a specific binding.
+* Add the following annotation types:
+  * `FuseTypes`: mark specified types fusible within a specific binding.
+  * `NoFuseTypes`: disable `Fuse` annotations on the specified types
+    within a specific binding.
   * `InspectTypes`: Forbid or permit existence of given types within a
     binding.
   * `InspectTypeClasses`: Forbid or permit existence of given type
-    classes within a binding.
+    classe dictionaries within a binding.
   * `MaxCoreSize`: report the size of the optimized Core of a binding.
-    With the `dump-core-sizes` plugin option, the core size of every
-    annotated binding is also appended to a file.
-  * `DumpCore`: write the core of a specific binding to a file. The
-    `dump-core-if-annotated` plugin option does the same automatically for
-    every binding carrying a violation-causing annotation (`InspectTypes`,
-    `InspectTypeClasses` or `MaxCoreSize`), and `dump-core-if-violated`
-    does so only for bindings that actually reported a violation.
+  * `DumpCore`: write the core of a specific binding to a file.
+* Added the following CLI options:
+  * `dump-core-sizes`: the core size of every annotated binding is
+    appended to a file.
+  * `dump-core-if-annotated`: write the final core of every
+    binding carrying a violation-causing annotation (`InspectTypes`,
+    `InspectTypeClasses` or `MaxCoreSize`),
+  * `dump-core-if-violated`: if a violation occurs write the core of the
+    binding to a file.
 
 ## 0.2.8
 
