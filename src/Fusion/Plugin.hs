@@ -62,7 +62,7 @@ import Data.Generics.Schemes (everywhere)
 import Data.Generics.Aliases (mkT)
 import Debug.Trace (trace)
 import System.Directory (createDirectoryIfMissing)
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath ((</>), takeDirectory, takeFileName)
 import qualified Data.List as DL
 import qualified Data.Map.Strict as Map
 import qualified Language.Haskell.TH.Syntax as TH
@@ -2033,6 +2033,21 @@ filterOutLast p [x]
     | otherwise = [x]
 filterOutLast p (x:xs) = x : filterOutLast p xs
 
+dumpCoreSuffix :: DynFlags -> Int -> SDoc -> String
+dumpCoreSuffix dflags counter title = printf "%02d" counter ++ "-"
+    ++ (map (\x -> if isSpace x then '-' else x)
+           $ filterOutLast isSpace
+           $ filter (/= ':')
+           $ takeWhile (/= '(')
+           $ showSDoc dflags title)
+    ++ "."
+
+dumpCoreFileName :: DynFlags -> Int -> SDoc -> Maybe FilePath
+dumpCoreFileName dflags counter title
+    | not (gopt Opt_DumpToFile dflags) = Nothing
+    | otherwise =
+        Just $ dumpCoreStem dflags ++ dumpCoreSuffix dflags counter title ++ "dump-simpl"
+
 dumpResult
 #if MIN_VERSION_ghc(9,2,0)
     :: Logger
@@ -2062,12 +2077,7 @@ dumpResult dflags print_unqual counter todo binds rules =
         GhcPlugins.<> text "] "
         GhcPlugins.<> todo
 
-    _suffix = printf "%02d" counter ++ "-"
-        ++ (map (\x -> if isSpace x then '-' else x)
-               $ filterOutLast isSpace
-               $ takeWhile (/= '(')
-               $ showSDoc dflags todo)
-        ++ "."
+    _suffix = dumpCoreSuffix dflags counter todo
 
 #if MIN_VERSION_ghc(9,4,0)
     prefix = log_dump_prefix (logFlags logger) ++ _suffix
@@ -2080,8 +2090,15 @@ dumpResult dflags print_unqual counter todo binds rules =
 dumpCore :: Int -> SDoc -> ModGuts -> CoreM ModGuts
 dumpCore counter title guts = do
     dflags <- getDynFlags
-    putMsgS $ "fusion-plugin: dumping core "
-        ++ show counter ++ " " ++ showSDoc dflags title
+    let passMsg = show counter ++ " " ++ showSDoc dflags title
+#if __GLASGOW_HASKELL__!=900
+    let fileMsg = case dumpCoreFileName dflags counter title of
+            Just f  -> takeFileName f
+            Nothing -> "stdout (" ++ passMsg ++ ")"
+#else
+    let fileMsg = "stdout (" ++ passMsg ++ ")"
+#endif
+    putMsgS $ "fusion-plugin: dumping core pass result to " ++ fileMsg
 
 #if MIN_VERSION_ghc(9,6,0)
     hscEnv <- getHscEnv
@@ -2112,7 +2129,25 @@ dumpCore counter title guts = do
 
 dumpCorePass :: Int -> SDoc -> CoreToDo
 dumpCorePass counter title =
-    CoreDoPluginPass "Fusion plugin dump core" (dumpCore counter title)
+    CoreDoPluginPass "dump core" (dumpCore counter title)
+
+dumpCoreStem :: DynFlags -> FilePath
+dumpCoreStem dflags = dir </> prefix
+
+    where
+
+    dir = fromMaybe "." (dumpDir dflags)
+#if MIN_VERSION_ghc(9,4,0)
+    prefix = fromMaybe (dumpPrefix dflags) (dumpPrefixForce dflags)
+#else
+    prefix = fromMaybe (fromMaybe "" (dumpPrefix dflags)) (dumpPrefixForce dflags)
+#endif
+
+dumpCoreLocationMsg :: DynFlags -> String
+dumpCoreLocationMsg dflags
+    | not (gopt Opt_DumpToFile dflags) =
+        "stdout (pass -ddump-to-file to write dump files instead)"
+    | otherwise = dumpCoreStem dflags ++ "*"
 
 _insertDumpCore :: [CoreToDo] -> [CoreToDo]
 _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
@@ -2121,6 +2156,13 @@ _insertDumpCore todos = dumpCorePass 0 (text "Initial ") : go 1 todos
     go counter (todo:rest) =
         todo : dumpCorePass counter (text "After " GhcPlugins.<> ppr todo)
              : go (counter + 1) rest
+
+dumpCoreLocationPass :: CoreToDo
+dumpCoreLocationPass =
+    CoreDoPluginPass "report dump-core location" $ \guts -> do
+        dflags <- getDynFlags
+        putMsgS $ "fusion-plugin: dumped core to " ++ dumpCoreLocationMsg dflags
+        return guts
 
 -------------------------------------------------------------------------------
 -- Install our plugin core pass
@@ -2160,71 +2202,85 @@ insertAfterSimplPhase0 origTodos ourTodos report =
         = todo : ourTodos ++ go True todos
     go found (todo:todos) = todo : go found todos
 
+isFusionPluginMarker :: CoreToDo -> Bool
+isFusionPluginMarker (CoreDoPluginPass "installed" _) = True
+isFusionPluginMarker _ = False
+
+fusionPluginMarker :: CoreToDo
+fusionPluginMarker = CoreDoPluginPass "installed" return
+
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
-install args todos = do
-    options <- liftIO $ parseOptions args
-    dflags <- getDynFlags
-    hscEnv <- getHscEnv
+install args todos
+    | any isFusionPluginMarker todos = do
+        putMsgS $ "fusion-plugin: warning: plugin is already installed for "
+            ++ "this module (check for a duplicate -fplugin=Fusion.Plugin "
+            ++ "in ghc-options), skipping the duplicate installation"
+        return todos
+    | otherwise = do
+        options <- liftIO $ parseOptions args
+        dflags <- getDynFlags
+        hscEnv <- getHscEnv
 #if MIN_VERSION_ghc(9,14,0)
-    let hpt = ue_hpt (hsc_unit_env hscEnv)
-    home_pkg_rules <- liftIO $  concatHpt (md_rules . hm_details) hpt
-    let hpt_rule_base = mkRuleBase home_pkg_rules
-        simplify = fusionSimplify hpt_rule_base hscEnv dflags
+        let hpt = ue_hpt (hsc_unit_env hscEnv)
+        home_pkg_rules <- liftIO $  concatHpt (md_rules . hm_details) hpt
+        let hpt_rule_base = mkRuleBase home_pkg_rules
+            simplify = fusionSimplify hpt_rule_base hscEnv dflags
 #elif MIN_VERSION_ghc(9,6,0)
-    m <- getModule
-    let
-        home_pkg_rules =
-            hptRules
-                hscEnv
-                (moduleUnitId m)
-                (GWIB
-                    { gwib_mod = moduleName m
-                    , gwib_isBoot = NotBoot
-                    }
-                )
-        hpt_rule_base = mkRuleBase home_pkg_rules
-        -- XXX GHC should export getHomeRuleBase
-        -- hpt_rule_base <- getHomeRuleBase
-        simplify = fusionSimplify hpt_rule_base hscEnv dflags
+        m <- getModule
+        let
+            home_pkg_rules =
+                hptRules
+                    hscEnv
+                    (moduleUnitId m)
+                    (GWIB
+                        { gwib_mod = moduleName m
+                        , gwib_isBoot = NotBoot
+                        }
+                    )
+            hpt_rule_base = mkRuleBase home_pkg_rules
+            -- XXX GHC should export getHomeRuleBase
+            -- hpt_rule_base <- getHomeRuleBase
+            simplify = fusionSimplify hpt_rule_base hscEnv dflags
 #else
-    let simplify = fusionSimplify hscEnv dflags
+        let simplify = fusionSimplify hscEnv dflags
 #endif
 
-    -- We run our plugin once the simplifier finishes phase 0,
-    -- followed by a gentle simplifier which inlines and case-cases
-    -- twice.
-    --
-    -- TODO: The gentle simplifier runs on the whole program,
-    -- however it might be better to call `simplifyExpr` on the
-    -- expression directly.
-    --
-    -- TODO do not run simplify if we did not do anything in markInline phase.
-    return $
-        (if optionsDumpCore options
-         then _insertDumpCore
-         else id) $
-        insertAfterSimplPhase0
-            todos
-            [ fusionMarkInline 1 ReportSilent True
-            , simplify
-            , fusionMarkInline 2 ReportSilent True
-            , simplify
-            , fusionMarkInline 3 ReportSilent True
-            , simplify
-            -- This lets us know what was left unfused after all the inlining
-            -- and case-of-case transformations.
-            , let mesg = "Check unfused (post inlining)"
-              in CoreDoPluginPass mesg
-                    (fusionReport mesg ReportSilent False False False False False)
-            ]
-            (let mesg = "Check unfused (final)"
-                 report =
-                    fusionReport
-                        mesg (optionsVerbosityLevel options) True
-                        (optionsWError options) (optionsDumpCoreSizes options)
-                        (optionsDumpCoreIfAnnotated options)
-                        (optionsDumpCoreIfViolated options)
-            in CoreDoPluginPass mesg report)
+        -- We run our plugin once the simplifier finishes phase 0,
+        -- followed by a gentle simplifier which inlines and case-cases
+        -- twice.
+        --
+        -- TODO: The gentle simplifier runs on the whole program,
+        -- however it might be better to call `simplifyExpr` on the
+        -- expression directly.
+        --
+        -- TODO do not run simplify if we did not do anything in markInline phase.
+        return $
+            (if optionsDumpCore options
+             then (++ [dumpCoreLocationPass]) . _insertDumpCore
+             else id) $
+            insertAfterSimplPhase0
+                todos
+                [ fusionPluginMarker
+                , fusionMarkInline 1 ReportSilent True
+                , simplify
+                , fusionMarkInline 2 ReportSilent True
+                , simplify
+                , fusionMarkInline 3 ReportSilent True
+                , simplify
+                -- This lets us know what was left unfused after all the
+                -- inlining and case-of-case transformations.
+                , let mesg = "Check unfused (post inlining)"
+                  in CoreDoPluginPass mesg
+                        (fusionReport mesg ReportSilent False False False False False)
+                ]
+                (let mesg = "Check unfused (final)"
+                     report =
+                        fusionReport
+                            mesg (optionsVerbosityLevel options) True
+                            (optionsWError options) (optionsDumpCoreSizes options)
+                            (optionsDumpCoreIfAnnotated options)
+                            (optionsDumpCoreIfViolated options)
+                in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install _ todos = do
