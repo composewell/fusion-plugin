@@ -103,7 +103,8 @@ import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
 #elif MIN_VERSION_ghc(9,2,0)
 import GHC.Utils.Logger (putDumpMsg)
 #elif MIN_VERSION_ghc(9,0,0)
--- dump core option not supported
+import Data.Char (isSpace)
+import Text.Printf (printf)
 #else
 import Data.Char (isSpace)
 import Data.IORef (readIORef, writeIORef)
@@ -482,7 +483,14 @@ hasInlineBinder bndr =
     in isInlinePragma inl && IS_ACTIVE (inlinePragmaActivation inl)
 
 hasNoInlineBinder :: CoreBndr -> Bool
+#if MIN_VERSION_ghc(9,4,0)
 hasNoInlineBinder bndr = isNoInlinePragma (inlinePragInfo (idInfo bndr))
+#else
+hasNoInlineBinder bndr =
+    case inlinePragmaSpec (inlinePragInfo (idInfo bndr)) of
+        NoInline -> True
+        _ -> False
+#endif
 
 data InlineNeed a
     = InlineNeeded a
@@ -2054,6 +2062,22 @@ dumpSDoc dflags print_unqual
   where dump_style = mkDumpStyle dflags print_unqual
 #endif
 
+filterOutLast :: (a -> Bool) -> [a] -> [a]
+filterOutLast _ [] = []
+filterOutLast p [x]
+    | p x = []
+    | otherwise = [x]
+filterOutLast p (x:xs) = x : filterOutLast p xs
+
+dumpCoreSuffix :: DynFlags -> Int -> SDoc -> String
+dumpCoreSuffix dflags counter title = printf "%02d" counter ++ "-"
+    ++ (map (\x -> if isSpace x then '-' else x)
+           $ filterOutLast isSpace
+           $ filter (/= ':')
+           $ takeWhile (/= '(')
+           $ showSDoc dflags title)
+    ++ "."
+
 -- dump core not supported on 9.0.0, 9.0.0 does not export Logger
 #if __GLASGOW_HASKELL__!=900
 -- Only for GHC versions >= 9.2.0
@@ -2105,22 +2129,6 @@ dumpPassResult dflags unqual suffix hdr extra_info binds rules = do
     pp_rules = vcat [ blankLine
                     , text "------ Local rules for imported ids --------"
                     , pprRules rules ]
-
-filterOutLast :: (a -> Bool) -> [a] -> [a]
-filterOutLast _ [] = []
-filterOutLast p [x]
-    | p x = []
-    | otherwise = [x]
-filterOutLast p (x:xs) = x : filterOutLast p xs
-
-dumpCoreSuffix :: DynFlags -> Int -> SDoc -> String
-dumpCoreSuffix dflags counter title = printf "%02d" counter ++ "-"
-    ++ (map (\x -> if isSpace x then '-' else x)
-           $ filterOutLast isSpace
-           $ filter (/= ':')
-           $ takeWhile (/= '(')
-           $ showSDoc dflags title)
-    ++ "."
 
 dumpCoreFileName :: DynFlags -> String -> String -> Int -> SDoc -> Maybe FilePath
 dumpCoreFileName dflags pkgName modName counter title
