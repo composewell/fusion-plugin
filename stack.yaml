@@ -3,4 +3,4 @@ packages:
 - '.'
 extra-deps:
   - git: https://github.com/composewell/fusion-plugin-types.git
-    commit: d4fa57623450ba4a43f08ebd7cfbfc2745035375
+    commit: cfd6e81b6f44e72b51fc845aeece0b1680367cb9
