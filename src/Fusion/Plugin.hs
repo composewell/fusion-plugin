@@ -188,8 +188,9 @@ import Fusion.Plugin.Types
 --
 -- Note: @dump-core@ does not work for GHC-9.0.x.
 --
--- To record the optimized core size of every 'MaxCoreSize'-annotated binding
--- to a CSV file, pass the following:
+-- To record the optimized core size of every binding that carries a
+-- violation-causing annotation ('InspectTypes', 'InspectTypeClasses' or
+-- 'MaxCoreSize') to a CSV file, pass the following:
 --
 -- @
 -- ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
@@ -1439,18 +1440,35 @@ pluginDumpPrefix dflags pkgName modName =
         Just _  -> modName ++ "."
         Nothing -> fallbackDumpDir pkgName </> (modName ++ ".")
 
--- | Path of the CSV file that 'reportCoreSize' appends core sizes to when the
+-- | Path of the CSV file that 'dumpCoreSize' appends core sizes to when the
 -- @dump-core-sizes@ option is set: @\<module-name\>.core-sizes.csv@ under
 -- 'pluginDumpDir'.
 coreSizesFile :: DynFlags -> String -> String -> FilePath
 coreSizesFile dflags pkgName modName =
     pluginDumpStem dflags pkgName modName ++ "core-sizes.csv"
 
+-- | The optimized Core size, in terms, of a binding: the sum of the term
+-- counts of every binding in its closure (see 'binderClosure').
+binderCoreSize :: [(CoreBndr, CoreExpr)] -> CoreBndr -> Int
+binderCoreSize allBinds b =
+    sum (map (cs_tm . exprStats . snd) (binderClosure allBinds b))
+
+-- | Append a @name,core-size@ row for the given binding to the per-module CSV
+-- file (see 'coreSizesFile').
+dumpCoreSize
+    :: DynFlags -> String -> String -> [(CoreBndr, CoreExpr)] -> CoreBndr
+    -> CoreM ()
+dumpCoreSize dflags pkgName modName allBinds b = liftIO $ do
+    let path = coreSizesFile dflags pkgName modName
+    createDirectoryIfMissing True (takeDirectory path)
+    appendFile path
+        (binderDisplayName b ++ "," ++ show (binderCoreSize allBinds b) ++ "\n")
+
 -- Returns 0 on no violations and 1 otherwise.
 reportCoreSize
-    :: DynFlags -> ReportMode -> Bool -> String -> String -> MAX_CORE_SIZE_FM
+    :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
-reportCoreSize dflags reportMode dumpCoreSizes pkgName modName sizeAnns allBinds (NonRec b _) =
+reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
     case lookupBinderAnn b sizeAnns of
         Just ann | not (subsumedBySameName allBinds b) -> go ann
         _ -> return 0
@@ -1471,13 +1489,6 @@ reportCoreSize dflags reportMode dumpCoreSizes pkgName modName sizeAnns allBinds
                         ++ show terms
                         ++ " terms (set of " ++ show (length clSet)
                         ++ " bindings)"
-        -- Append a "binding-name,core-size" row to the per-module CSV file. The
-        -- name is the source binding name (see 'binderDisplayName'): no unique
-        -- suffix, and no @$w@ worker prefix.
-        when dumpCoreSizes $ liftIO $ do
-            let path = coreSizesFile dflags pkgName modName
-            createDirectoryIfMissing True (takeDirectory path)
-            appendFile path (binderDisplayName b ++ "," ++ show terms ++ "\n")
         if terms > maxSize
         then do
             putMsgS $ "fusion-plugin: "
@@ -1487,7 +1498,7 @@ reportCoreSize dflags reportMode dumpCoreSizes pkgName modName sizeAnns allBinds
                     ++ show maxSize ++ " terms)."
             return 1
         else return 0
-reportCoreSize _ _ _ _ _ _ _ (Rec _) =
+reportCoreSize _ _ _ _ (Rec _) =
     error "reportCoreSize: expecting only NonRec binders"
 
 -- | Split a string on @\'-\'@ characters.
@@ -1844,8 +1855,8 @@ fusionReport
         anyInspectClasses = runInspect && not (Map.null classAnns)
         anyMaxCoreSize = runInspect && not (Map.null sizeAnns)
         anyDumpCore = runInspect && not (Map.null dumpAnns)
-        anyReport =
-            anyInspect || anyInspectClasses || anyMaxCoreSize || anyDumpCore
+        anyViolationAnn = anyInspect || anyInspectClasses || anyMaxCoreSize
+        anyReport = anyViolationAnn || anyDumpCore
     case reportMode of
         ReportSilent | not anyReport -> return guts
         _ -> do
@@ -1857,7 +1868,7 @@ fusionReport
             let pkgName = modulePackageName (mg_module guts)
             let modName = moduleNameString (moduleName (mg_module guts))
             let allBinds = flattenBinds (mg_binds guts)
-            when (dumpCoreSizes && anyMaxCoreSize) $ liftIO $ do
+            when (dumpCoreSizes && anyViolationAnn) $ liftIO $ do
                 let path = coreSizesFile dflags pkgName modName
                     writeHeader = if csvAppend then appendFile else writeFile
                 createDirectoryIfMissing True (takeDirectory path)
@@ -1904,26 +1915,21 @@ fusionReport
                        dflags reportMode classAnns allBinds bind
               else return 0
         n3 <- if runInspect
-              then reportCoreSize
-                       dflags reportMode dumpCoreSizes pkgName modName sizeAnns
-                       allBinds bind
+              then reportCoreSize dflags reportMode sizeAnns allBinds bind
               else return 0
         when runInspect $
             reportDumpCore dflags pkgName modName dumpAnns allBinds bind
-        -- Auto-dump the Core of this binding (see 'dumpBindCore') when either:
-        --   * 'dump-core-if-annotated' is set and the binding carries a
-        --     violation-causing annotation ('InspectTypes', 'InspectTypeClasses'
-        --     or 'MaxCoreSize'), or
-        --   * 'dump-core-if-violated' is set and one of those checks actually
-        --     reported a violation for this binding (n1 + n2 + n3 > 0).
         let hasViolationAnn =
                    isJust (lookupBinderAnn b inspectAnns)
                 || isJust (lookupBinderAnn b classAnns)
                 || isJust (lookupBinderAnn b sizeAnns)
-            shouldDump =
+            notSubsumed = not (subsumedBySameName allBinds b)
+        when (runInspect && dumpCoreSizes && hasViolationAnn && notSubsumed) $
+            dumpCoreSize dflags pkgName modName allBinds b
+        let shouldDump =
                    (dumpCoreIfAnnotated && hasViolationAnn)
                 || (dumpCoreIfViolated && n1 + n2 + n3 > 0)
-        when (runInspect && shouldDump && not (subsumedBySameName allBinds b)) $
+        when (runInspect && shouldDump && notSubsumed) $
             dumpBindCore dflags pkgName modName allBinds b
         when (b `elemVarSet` liveBndrs) $ do
             let results = keepHeapAllocatedOnly

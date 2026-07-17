@@ -16,8 +16,9 @@
     after every Core-to-core pass (the per-binding counterpart of the
     `dump-core` CLI option).
 * Added the following CLI options:
-  * `dump-core-sizes`: the core size of every annotated binding is
-    appended to a file.
+  * `dump-core-sizes`: the core size of every binding carrying a
+    violation-causing annotation (`InspectTypes`, `InspectTypeClasses`
+    or `MaxCoreSize`) is appended to a file.
   * `dump-core-if-annotated`: write the final core of every
     binding carrying a violation-causing annotation (`InspectTypes`,
     `InspectTypeClasses` or `MaxCoreSize`),
