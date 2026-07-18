@@ -1931,34 +1931,18 @@ failOnUnmatchedAnns dflags pkgName modName allTopBinds allBinds
 -- annotation-check violation ('InspectPatternMatches', 'InspectAllocations',
 -- 'InspectTypeClasses' or 'MaxCoreSize') was found.
 fusionReport
-    :: String -> ReportMode -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool
+    :: String -> ReportMode -> Bool -> Options
     -> ModGuts -> CoreM ModGuts
-fusionReport
-        mesg reportMode runInspect werror dumpCoreSizes dumpCoreIfAnnotated
-        dumpCoreIfViolated csvAppend guts = do
-    pmAnns <-
-        if runInspect
-        then getAnnotationsByStableName
-                 "InspectPatternMatches" deserializeWithData guts
-        else return Map.empty
-    allocAnns <-
-        if runInspect
-        then getAnnotationsByStableName
-                 "InspectAllocations" deserializeWithData guts
-        else return Map.empty
-    sizeAnns <-
-        if runInspect
-        then getAnnotationsByStableName "MaxCoreSize" deserializeWithData guts
-        else return Map.empty
-    dumpAnns <-
-        if runInspect
-        then getAnnotationsByStableName "DumpCore" deserializeWithData guts
-        else return Map.empty
-    classAnns <-
-        if runInspect
-        then getAnnotationsByStableName
-                 "InspectTypeClasses" deserializeWithData guts
-        else return Map.empty
+fusionReport mesg reportMode runInspect opts guts = do
+    let getAnns name =
+            if runInspect
+            then getAnnotationsByStableName name deserializeWithData guts
+            else return Map.empty
+    pmAnns    <- getAnns "InspectPatternMatches"
+    allocAnns <- getAnns "InspectAllocations"
+    sizeAnns  <- getAnns "MaxCoreSize"
+    dumpAnns  <- getAnns "DumpCore"
+    classAnns <- getAnns "InspectTypeClasses"
     let anyInspect =
             runInspect && (not (Map.null pmAnns) || not (Map.null allocAnns))
         anyInspectClasses = runInspect && not (Map.null classAnns)
@@ -1977,9 +1961,10 @@ fusionReport
             let pkgName = modulePackageName (mg_module guts)
             let modName = moduleNameString (moduleName (mg_module guts))
             let allBinds = flattenBinds (mg_binds guts)
-            when (dumpCoreSizes && anyViolationAnn) $ liftIO $ do
+            when (optionsDumpCoreSizes opts && anyViolationAnn) $ liftIO $ do
                 let path = coreSizesFile dflags pkgName modName
-                    writeHeader = if csvAppend then appendFile else writeFile
+                    writeHeader =
+                        if optionsCsvAppend opts then appendFile else writeFile
                 createDirectoryIfMissing True (takeDirectory path)
                 writeHeader path "name,core-size\n"
             violations <-
@@ -1996,7 +1981,7 @@ fusionReport
             failOnUnmatchedAnns
                 dflags pkgName modName (mg_binds guts) allBinds
                 pmAnns allocAnns classAnns sizeAnns dumpAnns
-            when (werror && violations > 0) $ do
+            when (optionsWError opts && violations > 0) $ do
                 putMsgS $ "fusion-plugin: " ++ show violations
                         ++ " annotation violation(s) reported in " ++ modName
                         ++ "; failing the build (werror)."
@@ -2034,13 +2019,14 @@ fusionReport
                 || isJust (lookupBinderAnn b sizeAnns)
             hasDumpAnn = isJust (lookupBinderAnn b dumpAnns)
             notSubsumed = not (subsumedBySameName allBinds b)
-        when (runInspect && dumpCoreSizes && hasViolationAnn && notSubsumed) $
+        when (runInspect && optionsDumpCoreSizes opts
+                  && hasViolationAnn && notSubsumed) $
             dumpCoreSize dflags pkgName modName allBinds b
         let shouldDump
                 | hasDumpAnn = True
                 | otherwise =
-                       (dumpCoreIfAnnotated && hasViolationAnn)
-                    || (dumpCoreIfViolated && n1 + n2 + n3 > 0)
+                       (optionsDumpCoreIfAnnotated opts && hasViolationAnn)
+                    || (optionsDumpCoreIfViolated opts && n1 + n2 + n3 > 0)
         when (shouldDump && notSubsumed) $
             dumpBindCore dflags pkgName modName allBinds b
         when (b `elemVarSet` liveBndrs) $ do
@@ -2537,17 +2523,12 @@ install args todos
                 -- inlining and case-of-case transformations.
                 , let mesg = "Check unfused (post inlining)"
                   in CoreDoPluginPass mesg
-                        (fusionReport
-                            mesg ReportSilent False False False False False False)
+                        (fusionReport mesg ReportSilent False options)
                 ]
                 (let mesg = "Check unfused (final)"
                      report =
                         fusionReport
-                            mesg (optionsVerbosityLevel options) True
-                            (optionsWError options) (optionsDumpCoreSizes options)
-                            (optionsDumpCoreIfAnnotated options)
-                            (optionsDumpCoreIfViolated options)
-                            (optionsCsvAppend options)
+                            mesg (optionsVerbosityLevel options) True options
                 in CoreDoPluginPass mesg report)
 #else
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
