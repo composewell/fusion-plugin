@@ -31,8 +31,6 @@
 -- At the right places, fusion can provide dramatic performance improvements
 -- (e.g. 10x) to the code.
 
-{-# OPTIONS_GHC -fno-warn-orphans #-}
-{-# OPTIONS_GHC -Wno-x-partial #-}
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE CPP #-}
 
