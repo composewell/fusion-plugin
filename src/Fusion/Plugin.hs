@@ -56,11 +56,15 @@ where
 import Fusion.Plugin.Common
     ( Options(..)
     , ReportMode(..)
-    , defaultOptions
-    , fusionPluginMarker
-    , insertAfterSimplPhase0
-    , insertDumpPasses
-    , isFusionPluginMarker
+    , dumpCore
+    , dumpCoreSuffix
+    , getAnnotationsByStableName
+    , lookupBinderAnn
+    , modulePackageName
+    , pluginDumpDir
+    , pluginDumpStem
+    , subsumedBySameName
+    , writeBindCore
     )
 import Fusion.Plugin.Fuse
     ( fusionMarkInline
@@ -183,6 +187,17 @@ import Fusion.Plugin.Inspect
 
 #if MIN_VERSION_ghc(8,6,0)
 
+defaultOptions :: Options
+defaultOptions = Options
+    { optionsDumpCore = False
+    , optionsDumpCoreSizes = False
+    , optionsDumpCoreIfAnnotated = False
+    , optionsDumpCoreIfViolated = False
+    , optionsVerbosityLevel = ReportSilent
+    , optionsWError = False
+    , optionsCsvAppend = False
+    }
+
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
 setDumpCore val = do
     (args, opts) <- get
@@ -261,6 +276,142 @@ parseOptions args =
         case next of
             Just opt -> parseOpt opt >> parseLoop
             Nothing -> return ()
+
+dumpBindCorePass
+    :: DynFlags -> Int -> SDoc -> String -> String
+    -> [(CoreBndr, CoreExpr)] -> CoreBndr -> CoreM ()
+dumpBindCorePass dflags counter title pkgName modName allBinds b =
+    void $ writeBindCore dflags pkgName modName
+        ("." ++ dumpCoreSuffix dflags counter title ++ "dump-simpl") allBinds b
+
+dumpCoreLocationMsg :: DynFlags -> String -> String -> String
+dumpCoreLocationMsg dflags pkgName modName
+    | not (gopt Opt_DumpToFile dflags) =
+        "stdout (pass -ddump-to-file to write dump files instead)"
+    | otherwise = pluginDumpStem dflags pkgName modName ++ "*"
+
+dumpCoreLocationPass :: CoreToDo
+dumpCoreLocationPass =
+    CoreDoPluginPass "report dump-core location" $ \guts -> do
+        dflags <- getDynFlags
+        let pkgName = modulePackageName (mg_module guts)
+            modName = moduleNameString (moduleName (mg_module guts))
+        putMsgS $ "fusion-plugin: dumped core to "
+            ++ dumpCoreLocationMsg dflags pkgName modName
+        return guts
+
+-------------------------------------------------------------------------------
+-- Per-binding per-pass core dump (the 'DumpCorePasses' annotation)
+-------------------------------------------------------------------------------
+
+dumpCorePassesBinds
+    :: IORef (Maybe (DUMP_CORE_PASSES_FM)) -> Int -> SDoc -> ModGuts
+    -> CoreM ModGuts
+dumpCorePassesBinds ref counter title guts = do
+    cached <- liftIO $ readIORef ref
+    dumpAnns <- case cached of
+        Just anns -> return anns
+        Nothing -> do
+            anns <-
+                getAnnotationsByStableName
+                    "DumpCorePasses" deserializeWithData guts
+            liftIO $ writeIORef ref (Just anns)
+            return anns
+    unless (Map.null dumpAnns) $ do
+        dflags <- getDynFlags
+        let pkgName = modulePackageName (mg_module guts)
+            modName = moduleNameString (moduleName (mg_module guts))
+            allBinds = flattenBinds (mg_binds guts)
+        mapM_
+            (\(b, _) ->
+                case lookupBinderAnn b dumpAnns of
+                    Just _ | not (subsumedBySameName allBinds b) ->
+                        dumpBindCorePass
+                            dflags counter title pkgName modName allBinds b
+                    _ -> return ())
+            allBinds
+    return guts
+
+dumpCorePassesLocationPass :: IORef (Maybe (DUMP_CORE_PASSES_FM)) -> CoreToDo
+dumpCorePassesLocationPass ref =
+    CoreDoPluginPass "report DumpCorePasses location" $ \guts -> do
+        dflags <- getDynFlags
+        cached <- liftIO $ readIORef ref
+        let dumpAnns = fromMaybe Map.empty cached
+            pkgName = modulePackageName (mg_module guts)
+            modName = moduleNameString (moduleName (mg_module guts))
+            dir = pluginDumpDir dflags pkgName
+        forM_ (Map.keys dumpAnns) $ \name ->
+            putMsgS $ "fusion-plugin: dumped per-pass core for " ++ name
+                ++ " to " ++ (dir </> (modName ++ "." ++ name ++ ".*.dump-simpl"))
+        return guts
+
+insertDumpPasses
+    :: Bool -> Bool -> IORef (Maybe (DUMP_CORE_PASSES_FM)) -> [CoreToDo]
+    -> [CoreToDo]
+insertDumpPasses verbose dumpWhole ref todos =
+    dumpPass 0 (text "Initial ")
+        : go 1 todos
+        ++ [dumpCoreLocationPass | dumpWhole]
+        ++ [dumpCorePassesLocationPass ref]
+
+    where
+
+    dumpPass counter title =
+        CoreDoPluginPass "fusion-plugin dump core" $ \guts -> do
+            when dumpWhole $ void $ dumpCore verbose counter title guts
+            dumpCorePassesBinds ref counter title guts
+
+    go _ [] = []
+    go counter (todo:rest) =
+        todo
+            : dumpPass counter (text "After " GhcPlugins.<> ppr todo)
+            : go (counter + 1) rest
+
+-------------------------------------------------------------------------------
+-- Install our plugin core pass
+-------------------------------------------------------------------------------
+
+-- | Inserts the given list of 'CoreToDo' after the simplifier phase 0.
+-- A final 'CoreToDo' (for reporting) passed is executed after all the phases.
+insertAfterSimplPhase0
+    :: [CoreToDo] -> [CoreToDo] -> CoreToDo -> [CoreToDo]
+insertAfterSimplPhase0 origTodos ourTodos report =
+    go False origTodos ++ [report]
+  where
+    go False [] = error "Simplifier phase 0/\"main\" not found"
+    go True [] = []
+#if MIN_VERSION_ghc(9,6,0)
+    go _ (todo@(CoreDoSimplify
+        (SimplifyOpts
+            { so_mode =
+                (SimplMode
+                    { sm_phase = Phase 0
+                    , sm_names = ["main"]
+                    }
+                )
+            }
+        )):todos)
+#elif MIN_VERSION_ghc(9,5,0)
+    go _ (todo@(CoreDoSimplify (CoreDoSimplifyOpts _ SimplMode
+            { sm_phase = Phase 0
+            , sm_names = ["main"]
+            })):todos)
+#else
+    go _ (todo@(CoreDoSimplify _ SimplMode
+            { sm_phase = Phase 0
+            , sm_names = ["main"]
+            }):todos)
+#endif
+        = todo : ourTodos ++ go True todos
+    go found (todo:todos) = todo : go found todos
+
+isFusionPluginMarker :: CoreToDo -> Bool
+isFusionPluginMarker (CoreDoPluginPass "installed" _) = True
+isFusionPluginMarker _ = False
+
+fusionPluginMarker :: CoreToDo
+fusionPluginMarker = CoreDoPluginPass "installed" return
 
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos
