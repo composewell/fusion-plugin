@@ -81,6 +81,10 @@ showWithUnique dflags bndr =
        then bndrName
        else bndrName ++ "_" ++ suffix
 
+getNonRecBinder :: CoreBind -> CoreBndr
+getNonRecBinder (NonRec b _) = b
+getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
+
 listPath :: DynFlags -> [CoreBind] -> [Char]
 listPath dflags binds =
       DL.intercalate "/"
@@ -129,12 +133,6 @@ altsContainsAnn dflags isInteresting ((ALT_CONSTR(DEFAULT,_,_)):alts) =
 altsContainsAnn _ _ ((ALT_CONSTR(LitAlt _,_,_)):_) =
     debug 2 "Case LitAlt" Nothing
 
-getNonRecBinder :: CoreBind -> CoreBndr
-getNonRecBinder (NonRec b _) = b
-getNonRecBinder (Rec _) = error "markInline: expecting only nonrec binders"
-
-
-
 -- | Resolve the 'TyCon' a 'Constr' hit represents. When the 'Id' is itself a
 -- data constructor (regardless of arity), resolve via its 'DataCon' rather
 -- than the 'Id's own type: a non-nullary constructor's own type is a
@@ -148,14 +146,6 @@ constrTyCon con =
     case isDataConId_maybe con of
         Just dcon -> Just (dataConTyCon dcon)
         Nothing -> tyConAppTyConPicky_maybe (varType con)
-
-
-
-
-
-
-
-
 
 -- | Like GHC 'getAnnotations' but keyed by 'OccName' string instead of by
 -- 'Name' (i.e. by 'Unique'). 'getAnnotations' folds annotations into a
@@ -201,6 +191,21 @@ resolveTHNames = fmap catMaybes . mapM thNameToGhcName
 -- XXX we mark certain functions (e.g. toStreamK) with a NOFUSION
 -- annotation so that we do not report them.
 
+-- | Show a 'Name' fully qualified as @Module.Name@ so that entities with the
+-- same unqualified name defined in different modules (e.g. several @Step@
+-- types) can be told apart in a report. Wired-in names with no defining
+-- module are shown by their bare name.
+qualifiedName :: Name -> String
+qualifiedName name =
+    case nameModule_maybe name of
+        Just m ->
+            moduleNameString (moduleName m) ++ "." ++ getOccString name
+        Nothing -> getOccString name
+
+-- | Show a 'TyCon' fully qualified as @Module.Name@ (see 'qualifiedName').
+qualifiedTyConName :: TyCon -> String
+qualifiedTyConName = qualifiedName . getName
+
 showDetailsCaseMatch
     :: DynFlags
     -> ReportMode
@@ -219,22 +224,6 @@ showDetailsCaseMatch dflags reportMode (binds, c@(ALT_CONSTR(con,_,_))) =
                     " :: " ++ qualifiedTyConName (dataConTyCon dcon)
                 _ -> ""
     in listPath dflags binds ++ ": " ++ vstr ++ tstr
-
-
--- | Show a 'Name' fully qualified as @Module.Name@ so that entities with the
--- same unqualified name defined in different modules (e.g. several @Step@
--- types) can be told apart in a report. Wired-in names with no defining
--- module are shown by their bare name.
-qualifiedName :: Name -> String
-qualifiedName name =
-    case nameModule_maybe name of
-        Just m ->
-            moduleNameString (moduleName m) ++ "." ++ getOccString name
-        Nothing -> getOccString name
-
--- | Show a 'TyCon' fully qualified as @Module.Name@ (see 'qualifiedName').
-qualifiedTyConName :: TyCon -> String
-qualifiedTyConName = qualifiedName . getName
 
 showDetailsConstr
     :: DynFlags
@@ -313,44 +302,6 @@ binderDisplayName b = fromMaybe nm (DL.stripPrefix "$w" nm)
 
     nm = getOccString (GET_NAME b)
 
--- | True if another top-level binder that shares this binder's display name
--- (see 'binderDisplayName') already reaches it through its closure
--- (see 'binderClosure'), which makes a separate report for it redundant.
---
--- A single source binding can leave several top-level binders that collapse to
--- the same display name. Worker/wrapper splitting turns @f@ into a wrapper @f@
--- and a worker @$wf@; exporting adds a cast wrapper on top, e.g. for an exported
--- @drainN@ the final Core holds @drainN = drainN' \`cast\` co@, the ordinary
--- wrapper @drainN'@, and the worker @$wdrainN@ -- three binders all displaying
--- as @drainN@. Each outer one's closure contains the inner ones, so we report
--- only the outermost binder (the one no same-named sibling reaches) and skip the
--- rest, collapsing them to a single entry. When a binding leaves just one
--- survivor (e.g. a non-exported @f@ reduced to only @$wf@) nothing reaches it
--- and it is reported (this returns 'False').
-subsumedBySameName :: [(CoreBndr, CoreExpr)] -> CoreBndr -> Bool
-subsumedBySameName binds b = any covers binds
-
-    where
-
-    name = binderDisplayName b
-
-    covers (other, _) =
-           other /= b
-        && binderDisplayName other == name
-        && any ((== b) . fst) (binderClosure binds other)
-
--- | Look up a per-binder annotation, accounting for worker/wrapper splitting.
---
--- The annotations are keyed by the source-level binder name (e.g. @f@). The
--- strictness analyser, however, may split an annotated function @f@ into a
--- worker @$wf@ and a wrapper @f@; when @f@ is not exported the wrapper is
--- frequently inlined away at its (single) call site, leaving only @$wf@ in the
--- final Core. In that case the binder's occurrence name (@$wf@) would not be
--- found in the annotation map. So if the direct lookup fails and the binder is
--- a @$w@ worker, retry with the prefix stripped.
-lookupBinderAnn :: CoreBndr -> Map.Map String a -> Maybe a
-lookupBinderAnn b m = listToMaybe (mapMaybe (`Map.lookup` m) (binderAnnKeys b))
-
 -------------------------------------------------------------------------------
 -- Transitive closure of a binding
 -------------------------------------------------------------------------------
@@ -406,6 +357,44 @@ binderClosure binds root = go [root] emptyVarSet []
                                    (intersectVarSet (exprVarOccs e) topSet)
                     in go (refs ++ vs) (extendVarSet seen v) ((v, e) : acc)
 
+-- | True if another top-level binder that shares this binder's display name
+-- (see 'binderDisplayName') already reaches it through its closure
+-- (see 'binderClosure'), which makes a separate report for it redundant.
+--
+-- A single source binding can leave several top-level binders that collapse to
+-- the same display name. Worker/wrapper splitting turns @f@ into a wrapper @f@
+-- and a worker @$wf@; exporting adds a cast wrapper on top, e.g. for an exported
+-- @drainN@ the final Core holds @drainN = drainN' \`cast\` co@, the ordinary
+-- wrapper @drainN'@, and the worker @$wdrainN@ -- three binders all displaying
+-- as @drainN@. Each outer one's closure contains the inner ones, so we report
+-- only the outermost binder (the one no same-named sibling reaches) and skip the
+-- rest, collapsing them to a single entry. When a binding leaves just one
+-- survivor (e.g. a non-exported @f@ reduced to only @$wf@) nothing reaches it
+-- and it is reported (this returns 'False').
+subsumedBySameName :: [(CoreBndr, CoreExpr)] -> CoreBndr -> Bool
+subsumedBySameName binds b = any covers binds
+
+    where
+
+    name = binderDisplayName b
+
+    covers (other, _) =
+           other /= b
+        && binderDisplayName other == name
+        && any ((== b) . fst) (binderClosure binds other)
+
+-- | Look up a per-binder annotation, accounting for worker/wrapper splitting.
+--
+-- The annotations are keyed by the source-level binder name (e.g. @f@). The
+-- strictness analyser, however, may split an annotated function @f@ into a
+-- worker @$wf@ and a wrapper @f@; when @f@ is not exported the wrapper is
+-- frequently inlined away at its (single) call site, leaving only @$wf@ in the
+-- final Core. In that case the binder's occurrence name (@$wf@) would not be
+-- found in the annotation map. So if the direct lookup fails and the binder is
+-- a @$w@ worker, retry with the prefix stripped.
+lookupBinderAnn :: CoreBndr -> Map.Map String a -> Maybe a
+lookupBinderAnn b m = listToMaybe (mapMaybe (`Map.lookup` m) (binderAnnKeys b))
+
 fallbackDumpDir :: String -> FilePath
 fallbackDumpDir pkgName = "fusion-plugin-output" </> pkgName
 
@@ -422,9 +411,6 @@ pluginDumpPrefix dflags pkgName modName =
     case dumpDir dflags of
         Just _  -> modName ++ "."
         Nothing -> fallbackDumpDir pkgName </> (modName ++ ".")
-
-
-
 
 -- | Split a string on @\'-\'@ characters.
 splitOnDash :: String -> [String]
