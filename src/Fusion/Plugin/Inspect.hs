@@ -38,15 +38,203 @@ import Fusion.Plugin.Common
 
 #if MIN_VERSION_ghc(8,6,0)
 
+-------------------------------------------------------------------------------
+-- Core hits: locating and classifying interesting types in a binding
+-------------------------------------------------------------------------------
 
-data InspectAnns = InspectAnns
-    { iaPatternMatches :: INSPECT_PM_FM
-    , iaAllocations    :: INSPECT_ALLOC_FM
-    , iaClasses        :: INSPECT_CLASSES_FM
-    , iaSizes          :: MAX_CORE_SIZE_FM
-    , iaDumps          :: DUMP_CORE_FM
-    }
+-- | A hit found in the Core of a binding.
+-- 1. 'CaseAlt' is a scrutiny that matched a specific data constructor;
+-- 2. 'CaseScrut' is a scrutiny with no matched constructor -- a default-only
+-- (or literal) @case@ that merely forces a value, e.g. @case s of _ -> ...@
+-- where @s :: SPEC@ -- whose type comes from the case binder;
+-- 3. 'Constr' is a construction or bare boxed use.
+data Context = CaseAlt (Alt CoreBndr) | CaseScrut CoreBndr | Constr Id
 
+-- letBndrsThatAreCases restricts itself to only case matches right on
+-- entry to a let. This one looks for case matches anywhere.
+--
+-- | Report whether data constructors of interest are case matched or returned
+-- anywhere in the binders, not just case match on entry or construction on
+-- return.
+--
+containsAnns
+    :: DynFlags -> (Name -> Bool) -> CoreBind -> [([CoreBind], Context)]
+containsAnns dflags isInteresting bind =
+    -- The first argument is current binder and its parent chain. We add a new
+    -- element to this path when we enter a let statement.
+    goLet [] bind
+  where
+    go :: [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
+
+    -- Match and record the case alternative if it contains a constructor
+    -- annotated with "Fuse" and traverse the Alt expressions to discover more
+    -- let bindings.
+    go parents (Case _ caseBndr _ alts) =
+        let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
+            hit =
+                case altsContainsAnn dflags isInteresting alts of
+                    Just x -> [(parents, CaseAlt x)]
+                    Nothing ->
+                        -- 'altsContainsAnn' recognizes an interesting type
+                        -- only through a matched data constructor. A
+                        -- default-only (or literal) case has none, so fall
+                        -- back to the scrutinee's type (the case binder's
+                        -- type) -- otherwise e.g. `case s of _ -> ...` with `s
+                        -- :: SPEC` would go unreported.
+                        case tyConAppTyConPicky_maybe (varType caseBndr) of
+                            Just tycon | isInteresting (GET_NAME tycon) ->
+                                [(parents, CaseScrut caseBndr)]
+                            _ -> []
+        in hit ++ binders
+
+    -- Enter a new let binding inside the current expression and traverse the
+    -- let expression as well.
+    go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
+
+    -- If the head of the application spine is a data constructor, record a hit
+    -- for its type -- this recognizes a constructor applied to its fields
+    -- (e.g. `Yield x y`), which checking a bare 'Var' node's own type cannot:
+    -- the unapplied constructor 'Id' has a function type, not the constructed
+    -- type, so that check only fires for nullary constructors.
+    go parents e@(App _ _) =
+        let (fun, args) = collectArgs e
+            hit = case fun of
+                Var i
+                    | Just dcon <- isDataConId_maybe i
+                    , isInteresting (GET_NAME (dataConTyCon dcon)) ->
+                        [(parents, Constr i)]
+                _ -> []
+        in hit ++ go parents fun ++ concatMap (go parents) args
+    go parents (Lam _ expr1) = go parents expr1
+    go parents (Cast expr1 _) = go parents expr1
+
+    -- Check if the Var is of the type of a data constructor of interest
+    go parents (Var i) =
+        case tyConAppTyConPicky_maybe (varType i) of
+            Just tycon | isInteresting (GET_NAME tycon) ->
+                [(parents, Constr i)]
+            _ -> []
+
+    -- There are no let bindings in these.
+    go _ (Lit _) = []
+    go _ (Tick _ _) = []
+    go _ (Type _) = []
+    go _ (Coercion _) = []
+
+    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Context)]
+    goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
+    goLet parents (Rec bs) =
+        bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
+
+contextTyConName :: Context -> Maybe Name
+contextTyConName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+    Just (GET_NAME $ dataConTyCon dcon)
+contextTyConName (CaseAlt _) = Nothing
+contextTyConName (CaseScrut bndr) =
+    GET_NAME <$> tyConAppTyConPicky_maybe (varType bndr)
+contextTyConName (Constr con) = GET_NAME <$> constrTyCon con
+
+-- | Like 'contextTyConName' but yields the fully-qualified @Module.Type@ name
+-- (via 'qualifiedTyConName') used in reports rather than the raw 'Name'.
+contextQualifiedName :: Context -> Maybe String
+contextQualifiedName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+    Just (qualifiedTyConName (dataConTyCon dcon))
+contextQualifiedName (CaseAlt _) = Nothing
+contextQualifiedName (CaseScrut bndr) =
+    qualifiedTyConName <$> tyConAppTyConPicky_maybe (varType bndr)
+contextQualifiedName (Constr con) = qualifiedTyConName <$> constrTyCon con
+
+-- | Drop any hit whose TyCon 'Name' is in the given exclusion list.
+filterExcluded
+    :: [Name] -> [([CoreBind], Context)] -> [([CoreBind], Context)]
+filterExcluded excl =
+    filter (\(_, ctx) -> maybe True (`notElem` excl) (contextTyConName ctx))
+
+-- | True when the type occurs in a scrutinizing (pattern-match, i.e. @case@)
+-- position -- a value being deconstructed. Note this is a /use/ of the value,
+-- not an allocation: the box was allocated elsewhere (see 'isHeapAllocated').
+isPatternMatch :: Context -> Bool
+isPatternMatch (CaseAlt _)   = True
+isPatternMatch (CaseScrut _) = True
+isPatternMatch (Constr _)    = False
+
+-- | True when the type occurs in a constructing (allocating) position -- a
+-- value being built here.
+isConstruction :: Context -> Bool
+isConstruction (Constr _)    = True
+isConstruction (CaseAlt _)   = False
+isConstruction (CaseScrut _) = False
+
+-- | True for TyCons whose values GHC never heap-allocates: unboxed
+-- primitives (e.g. 'Int#', 'State#'), unboxed tuples/sums, and true
+-- enumeration types (every data constructor nullary, e.g. '()', 'Bool')
+-- which are compiled as statically shared singletons.
+isNotHeapAllocatedTyCon :: TyCon -> Bool
+isNotHeapAllocatedTyCon tycon =
+    isPrimTyCon tycon
+    || isUnboxedTupleTyCon tycon
+    || isUnboxedSumTyCon tycon
+    || isEnumerationTyCon tycon
+
+-- | False for the cases that can never represent boxing: a case match or
+-- construction of a non-allocating type (see 'isNotHeapAllocatedTyCon'), or a
+-- bare reference to something of function type (e.g. a primop like \"+#\", or
+-- a specialized worker) which is not a data construction at all.
+--
+-- This covers all usage including case scrutiny as well as construction.
+isHeapAllocated :: Context -> Bool
+isHeapAllocated (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+    not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
+isHeapAllocated (CaseAlt _) = True
+isHeapAllocated (CaseScrut bndr) =
+    maybe True (not . isNotHeapAllocatedTyCon)
+        (tyConAppTyConPicky_maybe (varType bndr))
+isHeapAllocated (Constr con) =
+    case isDataConId_maybe con of
+        -- A genuine data-constructor 'Id' is never itself the "bare
+        -- reference to something of function type" this guards against
+        -- (that's a primop/worker, never a 'DataCon'), so the 'isFunTy'
+        -- exclusion below does not apply here -- it would wrongly drop
+        -- every non-nullary constructor (e.g. @(:)@), whose own type is a
+        -- function over its fields.
+        Just dcon -> not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
+        Nothing ->
+            not (isFunTy (varType con))
+            && maybe True (not . isNotHeapAllocatedTyCon)
+                     (tyConAppTyConPicky_maybe (varType con))
+
+-- | Drop the cases that can never represent boxing (see 'isHeapAllocated').
+keepHeapAllocatedOnly
+    :: [([CoreBind], Context)] -> [([CoreBind], Context)]
+keepHeapAllocatedOnly = filter (isHeapAllocated . snd)
+
+-- | Show a scrutinizing hit for the detailed report. A 'Left' is a scrutiny
+-- that matched a data constructor (delegated to 'showDetailsCaseMatch'); a
+-- 'Right' is a constructor-less scrutiny (a default-only\/literal @case@) whose
+-- type is taken from the case binder.
+showDetailsScrutinize
+    :: DynFlags
+    -> ReportMode
+    -> ([CoreBind], Either (Alt CoreBndr) CoreBndr)
+    -> String
+showDetailsScrutinize dflags reportMode (binds, Left alt) =
+    showDetailsCaseMatch dflags reportMode (binds, alt)
+showDetailsScrutinize dflags reportMode (binds, Right bndr) =
+    let vstr =
+            case reportMode of
+                ReportVerbose -> showSDoc dflags (ppr bndr)
+                ReportVerbose1 -> showSDoc dflags (ppr bndr)
+                ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
+                _ -> error "showDetailsScrutinize: unreachable"
+        tstr =
+            case tyConAppTyConPicky_maybe (varType bndr) of
+                Just tc -> " :: " ++ qualifiedTyConName tc
+                Nothing -> ""
+    in listPath dflags binds ++ ": " ++ vstr ++ tstr
+
+-------------------------------------------------------------------------------
+-- Inspect pattern matches and allocations
+-------------------------------------------------------------------------------
 
 -- | The position-normalized form of an inspection directive. Both
 -- 'InspectPatternMatches' and 'InspectAllocations' are reduced to this common
@@ -369,6 +557,34 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
 reportInspectedClasses _ _ _ _ (Rec _) =
     error "reportInspectedClasses: expecting only NonRec binders"
 
+-------------------------------------------------------------------------------
+-- Inspect core size
+-------------------------------------------------------------------------------
+
+-- | Path of the CSV file that 'dumpCoreSize' appends core sizes to when the
+-- @dump-core-sizes@ option is set: @\<module-name\>.core-sizes.csv@ under
+-- 'pluginDumpDir'.
+coreSizesFile :: DynFlags -> String -> String -> FilePath
+coreSizesFile dflags pkgName modName =
+    pluginDumpStem dflags pkgName modName ++ "core-sizes.csv"
+
+-- | The optimized Core size, in terms, of a binding: the sum of the term
+-- counts of every binding in its closure (see 'binderClosure').
+binderCoreSize :: [(CoreBndr, CoreExpr)] -> CoreBndr -> Int
+binderCoreSize allBinds b =
+    sum (map (cs_tm . exprStats . snd) (binderClosure allBinds b))
+
+-- | Append a @name,core-size@ row for the given binding to the per-module CSV
+-- file (see 'coreSizesFile').
+dumpCoreSize
+    :: DynFlags -> String -> String -> [(CoreBndr, CoreExpr)] -> CoreBndr
+    -> CoreM ()
+dumpCoreSize dflags pkgName modName allBinds b = liftIO $ do
+    let path = coreSizesFile dflags pkgName modName
+    createDirectoryIfMissing True (takeDirectory path)
+    appendFile path
+        (binderDisplayName b ++ "," ++ show (binderCoreSize allBinds b) ++ "\n")
+
 -- Returns 0 on no violations and 1 otherwise.
 reportCoreSize
     :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM
@@ -405,6 +621,66 @@ reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
         else return 0
 reportCoreSize _ _ _ _ (Rec _) =
     error "reportCoreSize: expecting only NonRec binders"
+
+-------------------------------------------------------------------------------
+-- Reporting entry point
+-------------------------------------------------------------------------------
+
+dumpAllBindsCore :: DynFlags -> String -> String -> [CoreBind] -> CoreM ()
+dumpAllBindsCore dflags pkgName modName binds = do
+    let dir = pluginDumpDir dflags pkgName
+        fileName = modName ++ ".dump-simpl"
+        path = dir </> fileName
+    liftIO $ do
+        createDirectoryIfMissing True dir
+        writeFile path (showSDoc dflags (vcat (map ppr binds)) ++ "\n")
+    putMsgS $ "fusion-plugin: " ++ modName ++ ": dumped core to " ++ path
+
+-- | The set of top level binders that are reachable from an exported
+-- binder, and therefore guaranteed to survive into the final program.
+--
+-- This plugin's final check runs as the very last 'CoreToDo', but GHC's
+-- "CoreTidy" runs even after that, it changes the Core and there is no way to
+-- run a hook after that in the plugin. We approximate CoreTidy's reachability
+-- analysis here so we can skip unreachable bindings, seeding it from the same
+-- 'isExportedId' flag CoreTidy itself relies on.
+--
+liveTopLevelBinders :: ModGuts -> VarSet
+liveTopLevelBinders guts = go initial initial
+
+    where
+
+    flattenBind (NonRec b e) = [(b, e)]
+    flattenBind (Rec bs) = bs
+
+    topBinds = mg_binds guts >>= flattenBind
+    topBndrSet = mkVarSet (map fst topBinds)
+
+    adjacency :: VarEnv VarSet
+    adjacency = mkVarEnv
+        [ (b, intersectVarSet topBndrSet (exprFreeVars rhs))
+        | (b, rhs) <- topBinds
+        ]
+
+    initial = mkVarSet (filter isExportedId (map fst topBinds))
+
+    go frontier visited
+        | isEmptyVarSet frontier = visited
+        | otherwise =
+            let next = unionVarSets
+                     $ mapMaybe (lookupVarEnv adjacency)
+                     $ nonDetEltsUniqSet frontier
+                newVisited = unionVarSet visited next
+                newFrontier = next `minusVarSet` visited
+            in go newFrontier newVisited
+
+data InspectAnns = InspectAnns
+    { iaPatternMatches :: INSPECT_PM_FM
+    , iaAllocations    :: INSPECT_ALLOC_FM
+    , iaClasses        :: INSPECT_CLASSES_FM
+    , iaSizes          :: MAX_CORE_SIZE_FM
+    , iaDumps          :: DUMP_CORE_FM
+    }
 
 -- binderAnnKeys is shared with lookupBinderAnn and this function so that both
 -- are consistent with each other.
@@ -604,268 +880,5 @@ fusionReport mesg reportMode runInspect opts guts = do
                         dflags anns iAnns
                         pkgName modName liveBndrs allBinds (NonRec b expr))
                 bs
-
--- | A hit found in the Core of a binding.
--- 1. 'CaseAlt' is a scrutiny that matched a specific data constructor;
--- 2. 'CaseScrut' is a scrutiny with no matched constructor -- a default-only
--- (or literal) @case@ that merely forces a value, e.g. @case s of _ -> ...@
--- where @s :: SPEC@ -- whose type comes from the case binder;
--- 3. 'Constr' is a construction or bare boxed use.
-data Context = CaseAlt (Alt CoreBndr) | CaseScrut CoreBndr | Constr Id
-
--- letBndrsThatAreCases restricts itself to only case matches right on
--- entry to a let. This one looks for case matches anywhere.
---
--- | Report whether data constructors of interest are case matched or returned
--- anywhere in the binders, not just case match on entry or construction on
--- return.
---
-containsAnns
-    :: DynFlags -> (Name -> Bool) -> CoreBind -> [([CoreBind], Context)]
-containsAnns dflags isInteresting bind =
-    -- The first argument is current binder and its parent chain. We add a new
-    -- element to this path when we enter a let statement.
-    goLet [] bind
-  where
-    go :: [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
-
-    -- Match and record the case alternative if it contains a constructor
-    -- annotated with "Fuse" and traverse the Alt expressions to discover more
-    -- let bindings.
-    go parents (Case _ caseBndr _ alts) =
-        let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
-            hit =
-                case altsContainsAnn dflags isInteresting alts of
-                    Just x -> [(parents, CaseAlt x)]
-                    Nothing ->
-                        -- 'altsContainsAnn' recognizes an interesting type
-                        -- only through a matched data constructor. A
-                        -- default-only (or literal) case has none, so fall
-                        -- back to the scrutinee's type (the case binder's
-                        -- type) -- otherwise e.g. `case s of _ -> ...` with `s
-                        -- :: SPEC` would go unreported.
-                        case tyConAppTyConPicky_maybe (varType caseBndr) of
-                            Just tycon | isInteresting (GET_NAME tycon) ->
-                                [(parents, CaseScrut caseBndr)]
-                            _ -> []
-        in hit ++ binders
-
-    -- Enter a new let binding inside the current expression and traverse the
-    -- let expression as well.
-    go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
-
-    -- If the head of the application spine is a data constructor, record a hit
-    -- for its type -- this recognizes a constructor applied to its fields
-    -- (e.g. `Yield x y`), which checking a bare 'Var' node's own type cannot:
-    -- the unapplied constructor 'Id' has a function type, not the constructed
-    -- type, so that check only fires for nullary constructors.
-    go parents e@(App _ _) =
-        let (fun, args) = collectArgs e
-            hit = case fun of
-                Var i
-                    | Just dcon <- isDataConId_maybe i
-                    , isInteresting (GET_NAME (dataConTyCon dcon)) ->
-                        [(parents, Constr i)]
-                _ -> []
-        in hit ++ go parents fun ++ concatMap (go parents) args
-    go parents (Lam _ expr1) = go parents expr1
-    go parents (Cast expr1 _) = go parents expr1
-
-    -- Check if the Var is of the type of a data constructor of interest
-    go parents (Var i) =
-        case tyConAppTyConPicky_maybe (varType i) of
-            Just tycon | isInteresting (GET_NAME tycon) ->
-                [(parents, Constr i)]
-            _ -> []
-
-    -- There are no let bindings in these.
-    go _ (Lit _) = []
-    go _ (Tick _ _) = []
-    go _ (Type _) = []
-    go _ (Coercion _) = []
-
-    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Context)]
-    goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
-    goLet parents (Rec bs) =
-        bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
-
-contextTyConName :: Context -> Maybe Name
-contextTyConName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
-    Just (GET_NAME $ dataConTyCon dcon)
-contextTyConName (CaseAlt _) = Nothing
-contextTyConName (CaseScrut bndr) =
-    GET_NAME <$> tyConAppTyConPicky_maybe (varType bndr)
-contextTyConName (Constr con) = GET_NAME <$> constrTyCon con
-
--- | Like 'contextTyConName' but yields the fully-qualified @Module.Type@ name
--- (via 'qualifiedTyConName') used in reports rather than the raw 'Name'.
-contextQualifiedName :: Context -> Maybe String
-contextQualifiedName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
-    Just (qualifiedTyConName (dataConTyCon dcon))
-contextQualifiedName (CaseAlt _) = Nothing
-contextQualifiedName (CaseScrut bndr) =
-    qualifiedTyConName <$> tyConAppTyConPicky_maybe (varType bndr)
-contextQualifiedName (Constr con) = qualifiedTyConName <$> constrTyCon con
-
--- | Drop any hit whose TyCon 'Name' is in the given exclusion list.
-filterExcluded
-    :: [Name] -> [([CoreBind], Context)] -> [([CoreBind], Context)]
-filterExcluded excl =
-    filter (\(_, ctx) -> maybe True (`notElem` excl) (contextTyConName ctx))
-
--- | True when the type occurs in a scrutinizing (pattern-match, i.e. @case@)
--- position -- a value being deconstructed. Note this is a /use/ of the value,
--- not an allocation: the box was allocated elsewhere (see 'isHeapAllocated').
-isPatternMatch :: Context -> Bool
-isPatternMatch (CaseAlt _)   = True
-isPatternMatch (CaseScrut _) = True
-isPatternMatch (Constr _)    = False
-
--- | True when the type occurs in a constructing (allocating) position -- a
--- value being built here.
-isConstruction :: Context -> Bool
-isConstruction (Constr _)    = True
-isConstruction (CaseAlt _)   = False
-isConstruction (CaseScrut _) = False
-
--- | True for TyCons whose values GHC never heap-allocates: unboxed
--- primitives (e.g. 'Int#', 'State#'), unboxed tuples/sums, and true
--- enumeration types (every data constructor nullary, e.g. '()', 'Bool')
--- which are compiled as statically shared singletons.
-isNotHeapAllocatedTyCon :: TyCon -> Bool
-isNotHeapAllocatedTyCon tycon =
-    isPrimTyCon tycon
-    || isUnboxedTupleTyCon tycon
-    || isUnboxedSumTyCon tycon
-    || isEnumerationTyCon tycon
-
--- | False for the cases that can never represent boxing: a case match or
--- construction of a non-allocating type (see 'isNotHeapAllocatedTyCon'), or a
--- bare reference to something of function type (e.g. a primop like \"+#\", or
--- a specialized worker) which is not a data construction at all.
---
--- This covers all usage including case scrutiny as well as construction.
-isHeapAllocated :: Context -> Bool
-isHeapAllocated (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
-    not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
-isHeapAllocated (CaseAlt _) = True
-isHeapAllocated (CaseScrut bndr) =
-    maybe True (not . isNotHeapAllocatedTyCon)
-        (tyConAppTyConPicky_maybe (varType bndr))
-isHeapAllocated (Constr con) =
-    case isDataConId_maybe con of
-        -- A genuine data-constructor 'Id' is never itself the "bare
-        -- reference to something of function type" this guards against
-        -- (that's a primop/worker, never a 'DataCon'), so the 'isFunTy'
-        -- exclusion below does not apply here -- it would wrongly drop
-        -- every non-nullary constructor (e.g. @(:)@), whose own type is a
-        -- function over its fields.
-        Just dcon -> not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
-        Nothing ->
-            not (isFunTy (varType con))
-            && maybe True (not . isNotHeapAllocatedTyCon)
-                     (tyConAppTyConPicky_maybe (varType con))
-
--- | Drop the cases that can never represent boxing (see 'isHeapAllocated').
-keepHeapAllocatedOnly
-    :: [([CoreBind], Context)] -> [([CoreBind], Context)]
-keepHeapAllocatedOnly = filter (isHeapAllocated . snd)
-
--- | Show a scrutinizing hit for the detailed report. A 'Left' is a scrutiny
--- that matched a data constructor (delegated to 'showDetailsCaseMatch'); a
--- 'Right' is a constructor-less scrutiny (a default-only\/literal @case@) whose
--- type is taken from the case binder.
-showDetailsScrutinize
-    :: DynFlags
-    -> ReportMode
-    -> ([CoreBind], Either (Alt CoreBndr) CoreBndr)
-    -> String
-showDetailsScrutinize dflags reportMode (binds, Left alt) =
-    showDetailsCaseMatch dflags reportMode (binds, alt)
-showDetailsScrutinize dflags reportMode (binds, Right bndr) =
-    let vstr =
-            case reportMode of
-                ReportVerbose -> showSDoc dflags (ppr bndr)
-                ReportVerbose1 -> showSDoc dflags (ppr bndr)
-                ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
-                _ -> error "showDetailsScrutinize: unreachable"
-        tstr =
-            case tyConAppTyConPicky_maybe (varType bndr) of
-                Just tc -> " :: " ++ qualifiedTyConName tc
-                Nothing -> ""
-    in listPath dflags binds ++ ": " ++ vstr ++ tstr
-
--- | Path of the CSV file that 'dumpCoreSize' appends core sizes to when the
--- @dump-core-sizes@ option is set: @\<module-name\>.core-sizes.csv@ under
--- 'pluginDumpDir'.
-coreSizesFile :: DynFlags -> String -> String -> FilePath
-coreSizesFile dflags pkgName modName =
-    pluginDumpStem dflags pkgName modName ++ "core-sizes.csv"
-
--- | The optimized Core size, in terms, of a binding: the sum of the term
--- counts of every binding in its closure (see 'binderClosure').
-binderCoreSize :: [(CoreBndr, CoreExpr)] -> CoreBndr -> Int
-binderCoreSize allBinds b =
-    sum (map (cs_tm . exprStats . snd) (binderClosure allBinds b))
-
--- | Append a @name,core-size@ row for the given binding to the per-module CSV
--- file (see 'coreSizesFile').
-dumpCoreSize
-    :: DynFlags -> String -> String -> [(CoreBndr, CoreExpr)] -> CoreBndr
-    -> CoreM ()
-dumpCoreSize dflags pkgName modName allBinds b = liftIO $ do
-    let path = coreSizesFile dflags pkgName modName
-    createDirectoryIfMissing True (takeDirectory path)
-    appendFile path
-        (binderDisplayName b ++ "," ++ show (binderCoreSize allBinds b) ++ "\n")
-
-dumpAllBindsCore :: DynFlags -> String -> String -> [CoreBind] -> CoreM ()
-dumpAllBindsCore dflags pkgName modName binds = do
-    let dir = pluginDumpDir dflags pkgName
-        fileName = modName ++ ".dump-simpl"
-        path = dir </> fileName
-    liftIO $ do
-        createDirectoryIfMissing True dir
-        writeFile path (showSDoc dflags (vcat (map ppr binds)) ++ "\n")
-    putMsgS $ "fusion-plugin: " ++ modName ++ ": dumped core to " ++ path
-
--- | The set of top level binders that are reachable from an exported
--- binder, and therefore guaranteed to survive into the final program.
---
--- This plugin's final check runs as the very last 'CoreToDo', but GHC's
--- "CoreTidy" runs even after that, it changes the Core and there is no way to
--- run a hook after that in the plugin. We approximate CoreTidy's reachability
--- analysis here so we can skip unreachable bindings, seeding it from the same
--- 'isExportedId' flag CoreTidy itself relies on.
---
-liveTopLevelBinders :: ModGuts -> VarSet
-liveTopLevelBinders guts = go initial initial
-
-    where
-
-    flattenBind (NonRec b e) = [(b, e)]
-    flattenBind (Rec bs) = bs
-
-    topBinds = mg_binds guts >>= flattenBind
-    topBndrSet = mkVarSet (map fst topBinds)
-
-    adjacency :: VarEnv VarSet
-    adjacency = mkVarEnv
-        [ (b, intersectVarSet topBndrSet (exprFreeVars rhs))
-        | (b, rhs) <- topBinds
-        ]
-
-    initial = mkVarSet (filter isExportedId (map fst topBinds))
-
-    go frontier visited
-        | isEmptyVarSet frontier = visited
-        | otherwise =
-            let next = unionVarSets
-                     $ mapMaybe (lookupVarEnv adjacency)
-                     $ nonDetEltsUniqSet frontier
-                newVisited = unionVarSet visited next
-                newFrontier = next `minusVarSet` visited
-            in go newFrontier newVisited
-
 
 #endif
