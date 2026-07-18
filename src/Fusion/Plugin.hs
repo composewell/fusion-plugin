@@ -738,7 +738,13 @@ constructingBinders anns bind = goLet [] bind
     goLet parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
 
-data Context = CaseAlt (Alt CoreBndr) | Constr Id
+-- | A hit found in the Core of a binding.
+-- 1. 'CaseAlt' is a scrutiny that matched a specific data constructor;
+-- 2. 'CaseScrut' is a scrutiny with no matched constructor -- a default-only
+-- (or literal) @case@ that merely forces a value, e.g. @case s of _ -> ...@
+-- where @s :: SPEC@ -- whose type comes from the case binder;
+-- 3. 'Constr' is a construction or bare boxed use.
+data Context = CaseAlt (Alt CoreBndr) | CaseScrut CoreBndr | Constr Id
 
 -- letBndrsThatAreCases restricts itself to only case matches right on
 -- entry to a let. This one looks for case matches anywhere.
@@ -759,11 +765,23 @@ containsAnns dflags isInteresting bind =
     -- Match and record the case alternative if it contains a constructor
     -- annotated with "Fuse" and traverse the Alt expressions to discover more
     -- let bindings.
-    go parents (Case _ _ _ alts) =
+    go parents (Case _ caseBndr _ alts) =
         let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
-        in case altsContainsAnn dflags isInteresting alts of
-            Just x -> (parents, CaseAlt x) : binders
-            Nothing -> binders
+            hit =
+                case altsContainsAnn dflags isInteresting alts of
+                    Just x -> [(parents, CaseAlt x)]
+                    Nothing ->
+                        -- 'altsContainsAnn' recognizes an interesting type
+                        -- only through a matched data constructor. A
+                        -- default-only (or literal) case has none, so fall
+                        -- back to the scrutinee's type (the case binder's
+                        -- type) -- otherwise e.g. `case s of _ -> ...` with `s
+                        -- :: SPEC` would go unreported.
+                        case tyConAppTyConPicky_maybe (varType caseBndr) of
+                            Just tycon | isInteresting (GET_NAME tycon) ->
+                                [(parents, CaseScrut caseBndr)]
+                            _ -> []
+        in hit ++ binders
 
     -- Enter a new let binding inside the current expression and traverse the
     -- let expression as well.
@@ -822,6 +840,8 @@ contextTyConName :: Context -> Maybe Name
 contextTyConName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
     Just (GET_NAME $ dataConTyCon dcon)
 contextTyConName (CaseAlt _) = Nothing
+contextTyConName (CaseScrut bndr) =
+    GET_NAME <$> tyConAppTyConPicky_maybe (varType bndr)
 contextTyConName (Constr con) = GET_NAME <$> constrTyCon con
 
 -- | Like 'contextTyConName' but yields the fully-qualified @Module.Type@ name
@@ -830,6 +850,8 @@ contextQualifiedName :: Context -> Maybe String
 contextQualifiedName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
     Just (qualifiedTyConName (dataConTyCon dcon))
 contextQualifiedName (CaseAlt _) = Nothing
+contextQualifiedName (CaseScrut bndr) =
+    qualifiedTyConName <$> tyConAppTyConPicky_maybe (varType bndr)
 contextQualifiedName (Constr con) = qualifiedTyConName <$> constrTyCon con
 
 -- | Drop any hit whose TyCon 'Name' is in the given exclusion list.
@@ -842,14 +864,16 @@ filterExcluded excl =
 -- position -- a value being deconstructed. Note this is a /use/ of the value,
 -- not an allocation: the box was allocated elsewhere (see 'isHeapAllocated').
 isPatternMatch :: Context -> Bool
-isPatternMatch (CaseAlt _) = True
-isPatternMatch (Constr _)  = False
+isPatternMatch (CaseAlt _)   = True
+isPatternMatch (CaseScrut _) = True
+isPatternMatch (Constr _)    = False
 
 -- | True when the type occurs in a constructing (allocating) position -- a
 -- value being built here.
 isConstruction :: Context -> Bool
-isConstruction (Constr _)  = True
-isConstruction (CaseAlt _) = False
+isConstruction (Constr _)    = True
+isConstruction (CaseAlt _)   = False
+isConstruction (CaseScrut _) = False
 
 -- | True for TyCons whose values GHC never heap-allocates: unboxed
 -- primitives (e.g. 'Int#', 'State#'), unboxed tuples/sums, and true
@@ -872,6 +896,9 @@ isHeapAllocated :: Context -> Bool
 isHeapAllocated (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
     not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
 isHeapAllocated (CaseAlt _) = True
+isHeapAllocated (CaseScrut bndr) =
+    maybe True (not . isNotHeapAllocatedTyCon)
+        (tyConAppTyConPicky_maybe (varType bndr))
 isHeapAllocated (Constr con) =
     case isDataConId_maybe con of
         -- A genuine data-constructor 'Id' is never itself the "bare
@@ -972,6 +999,8 @@ data NormInspect = NormInspect
     -- ^ Label used in the terse "found ..." report line.
     , niBanner      :: String
     -- ^ The directive rendered for the detailed report banner.
+    , niHeapFilter  :: Bool
+    -- ^ Whether to drop non-heap-allocated hits in allocation matches.
     }
 
 -- | Normalize an 'InspectPatternMatches' directive. All of its constructors
@@ -1012,6 +1041,7 @@ normPatternMatches anns d = do
         , niPermit = permit
         , niForbidLabel = "forbidden pattern matches"
         , niBanner = banner
+        , niHeapFilter = False
         }
 
 -- | Normalize an 'InspectAllocations' directive. All of its constructors act
@@ -1052,6 +1082,7 @@ normAllocations anns d = do
         , niPermit = permit
         , niForbidLabel = "forbidden allocations"
         , niBanner = banner
+        , niHeapFilter = True
         }
 
 -------------------------------------------------------------------------------
@@ -1081,6 +1112,30 @@ showDetailsCaseMatch dflags reportMode (binds, c@(ALT_CONSTR(con,_,_))) =
                 DataAlt dcon ->
                     " :: " ++ qualifiedTyConName (dataConTyCon dcon)
                 _ -> ""
+    in listPath dflags binds ++ ": " ++ vstr ++ tstr
+
+-- | Show a scrutinizing hit for the detailed report. A 'Left' is a scrutiny
+-- that matched a data constructor (delegated to 'showDetailsCaseMatch'); a
+-- 'Right' is a constructor-less scrutiny (a default-only\/literal @case@) whose
+-- type is taken from the case binder.
+showDetailsScrutinize
+    :: DynFlags
+    -> ReportMode
+    -> ([CoreBind], Either (Alt CoreBndr) CoreBndr)
+    -> String
+showDetailsScrutinize dflags reportMode (binds, Left alt) =
+    showDetailsCaseMatch dflags reportMode (binds, alt)
+showDetailsScrutinize dflags reportMode (binds, Right bndr) =
+    let vstr =
+            case reportMode of
+                ReportVerbose -> showSDoc dflags (ppr bndr)
+                ReportVerbose1 -> showSDoc dflags (ppr bndr)
+                ReportVerbose2 -> showSDoc dflags (ppr $ head binds)
+                _ -> error "showDetailsScrutinize: unreachable"
+        tstr =
+            case tyConAppTyConPicky_maybe (varType bndr) of
+                Just tc -> " :: " ++ qualifiedTyConName tc
+                Nothing -> ""
     in listPath dflags binds ++ ": " ++ vstr ++ tstr
 
 -- | Show a 'Name' fully qualified as @Module.Name@ so that entities with the
@@ -1299,8 +1354,11 @@ reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
         let isInteresting = niInteresting ni
             exclusion = niExclusion ni
             inPosition = niPosition ni
+            heapFilter = if niHeapFilter ni
+                         then keepHeapAllocatedOnly
+                         else id
         let allHits = filter (inPosition . snd)
-                    $ keepHeapAllocatedOnly
+                    $ heapFilter
                     $ concatMap
                         (\(v, e) ->
                             containsAnns dflags isInteresting (NonRec v e))
@@ -1348,7 +1406,8 @@ reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
                 ++ ": inspecting (" ++ niBanner ni ++ ")..."
         let getAlts x =
                 case x of
-                    (bs, CaseAlt alt) -> Just (bs, alt)
+                    (bs, CaseAlt alt) -> Just (bs, Left alt)
+                    (bs, CaseScrut bndr) -> Just (bs, Right bndr)
                     _ -> Nothing
             patternMatches = mapMaybe getAlts results
             uniqBinders =
@@ -1362,7 +1421,7 @@ reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
             uniqConstr = DL.nub (map (getNonRecBinder . head . fst) constrs)
 
         showInfo b dflags reportMode "SCRUTINIZE"
-            uniqBinders patternMatches showDetailsCaseMatch
+            uniqBinders patternMatches showDetailsScrutinize
         showInfo b dflags reportMode "CONSTRUCT"
             uniqConstr constrs showDetailsConstr
 reportInspected _ _ _ _ _ _ (Rec _) =
