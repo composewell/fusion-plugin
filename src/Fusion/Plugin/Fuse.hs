@@ -264,7 +264,7 @@ letBndrsThatAreCases dflags anns bind = goLet [] bind
 needInlineTyCon :: CoreBind -> UNIQ_FM -> TyCon -> InlineNeed ()
 needInlineTyCon parent anns tycon =
     let parentBndr = getNonRecBinder parent
-    in case lookupUFM anns (GET_NAME tycon) of
+    in case lookupUFM anns (getName tycon) of
         Just _ | hasNoInlineBinder parentBndr -> InlineBlockedByNoInline tycon
         Just _ | not (hasInlineBinder parentBndr) -> InlineNeeded ()
         _ -> InlineNotNeeded
@@ -353,7 +353,7 @@ constructingBinders anns bind = goLet [] bind
 -- unchanged if the binder is not annotated.
 augmentFuseTypes :: UNIQ_FM -> FUSE_TYPES_FM -> CoreBndr -> CoreM (UNIQ_FM)
 augmentFuseTypes anns fuseTypesAnns b =
-    case Map.lookup (getOccString (GET_NAME b)) fuseTypesAnns of
+    case Map.lookup (getOccString (getName b)) fuseTypesAnns of
         Nothing -> return anns
         Just (FuseTypes ns) -> do
             names <- resolveTHNames ns
@@ -361,7 +361,7 @@ augmentFuseTypes anns fuseTypesAnns b =
 
 removeFuseTypes :: UNIQ_FM -> NO_FUSE_TYPES_FM -> CoreBndr -> CoreM (UNIQ_FM)
 removeFuseTypes anns noFuseTypesAnns b =
-    case Map.lookup (getOccString (GET_NAME b)) noFuseTypesAnns of
+    case Map.lookup (getOccString (getName b)) noFuseTypesAnns of
         Nothing -> return anns
         Just (NoFuseTypes ns) -> do
             names <- resolveTHNames ns
@@ -369,7 +369,7 @@ removeFuseTypes anns noFuseTypesAnns b =
 
 removeFuse :: UNIQ_FM -> NO_FUSE_FM -> CoreBndr -> UNIQ_FM
 removeFuse anns noFuseAnns b =
-    case Map.lookup (getOccString (GET_NAME b)) noFuseAnns of
+    case Map.lookup (getOccString (getName b)) noFuseAnns of
         Nothing -> anns
         Just NoFuse -> emptyUFM
 

@@ -120,7 +120,7 @@ containsAnns dflags isInteresting bind =
                         -- type) -- otherwise e.g. `case s of _ -> ...` with `s
                         -- :: SPEC` would go unreported.
                         case tyConAppTyConPicky_maybe (varType caseBndr) of
-                            Just tycon | isInteresting (GET_NAME tycon) ->
+                            Just tycon | isInteresting (getName tycon) ->
                                 [(parents, CaseScrut caseBndr)]
                             _ -> []
         in hit ++ binders
@@ -139,7 +139,7 @@ containsAnns dflags isInteresting bind =
             hit = case fun of
                 Var i
                     | Just dcon <- isDataConId_maybe i
-                    , isInteresting (GET_NAME (dataConTyCon dcon)) ->
+                    , isInteresting (getName (dataConTyCon dcon)) ->
                         [(parents, Constr i)]
                 _ -> []
         in hit ++ go parents fun ++ concatMap (go parents) args
@@ -149,7 +149,7 @@ containsAnns dflags isInteresting bind =
     -- Check if the Var is of the type of a data constructor of interest
     go parents (Var i) =
         case tyConAppTyConPicky_maybe (varType i) of
-            Just tycon | isInteresting (GET_NAME tycon) ->
+            Just tycon | isInteresting (getName tycon) ->
                 [(parents, Constr i)]
             _ -> []
 
@@ -166,11 +166,11 @@ containsAnns dflags isInteresting bind =
 
 contextTyConName :: Context -> Maybe Name
 contextTyConName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
-    Just (GET_NAME $ dataConTyCon dcon)
+    Just (getName $ dataConTyCon dcon)
 contextTyConName (CaseAlt _) = Nothing
 contextTyConName (CaseScrut bndr) =
-    GET_NAME <$> tyConAppTyConPicky_maybe (varType bndr)
-contextTyConName (Constr con) = GET_NAME <$> constrTyCon con
+    getName <$> tyConAppTyConPicky_maybe (varType bndr)
+contextTyConName (Constr con) = getName <$> constrTyCon con
 
 -- | Like 'contextTyConName' but yields the fully-qualified @Module.Type@ name
 -- (via 'qualifiedTyConName') used in reports rather than the raw 'Name'.
@@ -444,7 +444,7 @@ reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
                     stale = filter (`notElem` present) allowed
                 unless (null stale) $
                     putMsgS $ "fusion-plugin: "
-                            ++ getOccString (GET_NAME b)
+                            ++ getOccString (getName b)
                             ++ ": redundant " ++ label
                             ++ " entries (safe to remove): ["
                             ++ DL.intercalate ", " (map qualifiedName stale)
@@ -453,7 +453,7 @@ reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
     terse ni results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
         in putMsgS $ "fusion-plugin: "
-                   ++ getOccString (GET_NAME b)
+                   ++ getOccString (getName b)
                    ++ ": found " ++ niForbidLabel ni ++ " ["
                    ++ DL.intercalate ", " names ++ "]"
 
@@ -576,7 +576,7 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
     report _ hits =
         let names = DL.nub (map qualifiedTyConName hits)
         in putMsgS $ "fusion-plugin: "
-                   ++ getOccString (GET_NAME b)
+                   ++ getOccString (getName b)
                    ++ ": found forbidden type classes ["
                    ++ DL.intercalate ", " names ++ "]"
 
@@ -588,7 +588,7 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
             stale = filter (`notElem` present) allowed
         unless (null stale) $
             putMsgS $ "fusion-plugin: "
-                    ++ getOccString (GET_NAME b)
+                    ++ getOccString (getName b)
                     ++ ": redundant PermitTypeClasses entries (safe to remove): ["
                     ++ DL.intercalate ", " (map qualifiedName stale) ++ "]"
     warnStalePermitted _ _ = return ()

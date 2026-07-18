@@ -193,7 +193,7 @@ altsContainsAnn _ _ [] = Nothing
 altsContainsAnn _ _ ((ALT_CONSTR(DEFAULT,_,_)):[]) =
     debug 2 "Case trivial default" Nothing
 altsContainsAnn dflags isInteresting (bndr@(ALT_CONSTR(DataAlt dcon,_,_)):_) =
-    let name = GET_NAME $ dataConTyCon dcon
+    let name = getName $ dataConTyCon dcon
         mesg = "Case DataAlt type " ++ showWithUnique dflags name
     in if isInteresting name
        then debug 2 (mesg ++ " annotated") (Just bndr)
@@ -359,7 +359,7 @@ binderAnnKeys b = nm : [base | Just base <- [DL.stripPrefix "$w" nm]]
 
     where
 
-    nm = getOccString (GET_NAME b)
+    nm = getOccString (getName b)
 
 -- | The source-level display name of a binder: its occurrence name with any
 -- @$w@ worker prefix stripped. The worker/wrapper transformation renames an
@@ -370,7 +370,7 @@ binderDisplayName b = fromMaybe nm (DL.stripPrefix "$w" nm)
 
     where
 
-    nm = getOccString (GET_NAME b)
+    nm = getOccString (getName b)
 
 -------------------------------------------------------------------------------
 -- Transitive closure of a binding
