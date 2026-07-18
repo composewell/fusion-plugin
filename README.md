@@ -78,8 +78,8 @@ that one binding:
 
 import Fusion.Plugin.Types (FuseTypes(..))
 
-{-# ANN myFunction (FuseTypes [''Step, ''MyMaybe]) #-}
-myFunction :: ...
+{-# ANN function (FuseTypes [''Step, ''Maybe]) #-}
+function :: ...
 ```
 
 Type references are TH `Name`s (`''Step`), so a typo or a stale reference to a
@@ -102,8 +102,8 @@ those types everywhere else in the module is unaffected:
 
 import Fusion.Plugin.Types (NoFuseTypes(..))
 
-{-# ANN myFunction (NoFuseTypes [''Step, ''MyMaybe]) #-}
-myFunction :: ...
+{-# ANN function (NoFuseTypes [''Step, ''Maybe]) #-}
+function :: ...
 ```
 
 `NoFuse` is the blanket form of `NoFuseTypes`: instead of listing types,
@@ -115,8 +115,8 @@ involved. This overrides any module-wide `Fuse` annotation and any
 ```haskell
 import Fusion.Plugin.Types (NoFuse(..))
 
-{-# ANN myFunction NoFuse #-}
-myFunction :: ...
+{-# ANN function NoFuse #-}
+function :: ...
 ```
 
 ## Annotations to Verify Fusion
@@ -134,45 +134,74 @@ will fail the compilation on violation.
 import Fusion.Plugin.Types (InspectTypes(..))
 ```
 
+### Using `Fuse` Annotated as Baseline
+
 Complain if any `Fuse` annotated type is found in the function.
 ```haskell
-{-# ANN function1 (ForbidFused [] []) #-}
+{-# ANN function (ForbidFused [] []) #-}
 function1 :: ...
 ```
 
 Also forbid `Maybe` as well even though it isn't Fuse-annotated.
 ```haskell
-{-# ANN function1a (ForbidFused [''Maybe] []) #-}
+{-# ANN function (ForbidFused [''Maybe] []) #-}
 function1a :: ...
 ```
 
 Disallow `Maybe`, but explicitly allow `Step` even though it is Fuse-annotated
 we allow it to be present in this binding.
 ```haskell
-{-# ANN function1b (ForbidFused [''Maybe] [''Step]) #-}
+{-# ANN function (ForbidFused [''Maybe] [''Step]) #-}
 function1b :: ...
 ```
 
+### Forbidding Only Selected Types
+
 Disallow the specified types and allow the rest, irrespective of `Fuse`
-annotation.
+annotation. Both pattern macthes and allocations are checked.
 ```haskell
-{-# ANN function2 (ForbidBoxedUse [''Step]) #-}
+{-# ANN function (ForbidBoxedUse [''Step]) #-}
 function2 :: ...
 ```
 
-Allow only the specified types and disallow all others.
+Report the listed types only where they are pattern-matched:
 ```haskell
-{-# ANN function3 (PermitBoxedUse [''Int, ''IO]) #-}
+{-# ANN function (ForbidPatternMatches [''Step]) #-}
+```
+
+Report the listed types only where they are allocated:
+```haskell
+{-# ANN function (ForbidAllocations [''Step]) #-}
+```
+
+### Permitting Only Selected Types
+
+Allow only the specified types and disallow all others.
+Both pattern macthes and allocations are checked.
+```haskell
+{-# ANN function (PermitBoxedUse [''Int, ''IO]) #-}
 function3 :: ...
 ```
-If any of the permitted types is not actually found in the binding, a warning
-is emitted so that stale entries can be removed from the list.
 
-To show all boxed types used within a function:
+To report all boxed types used within a function:
 ```haskell
-{-# ANN function4 (PermitBoxedUse []) #-}
+{-# ANN function (PermitBoxedUse []) #-}
 function4 :: ...
 ```
+
+Report every pattern-matched type except the listed ones:
+```haskell
+{-# ANN function (PermitPatternMatches [''Int, ''IO]) #-}
+```
+
+Report every allocated type except the listed ones:
+```haskell
+{-# ANN function (PermitAllocations [''Int, ''IO]) #-}
+```
+
+If any of the types in the permitted list is not actually found in the
+binding, a warning is emitted so that stale entries can be removed from
+the list.
 
 ### Inspecting type class dictionaries
 
@@ -210,13 +239,13 @@ optimizations. To guard against or detect such issues we can use the
 ```haskell
 import Fusion.Plugin.Types (MaxCoreSize(..))
 
-{-# ANN myFunction (MaxCoreSize 1000) #-}
-myFunction :: ...
+{-# ANN function (MaxCoreSize 1000) #-}
+function :: ...
 ```
 
 This prints a line such as:
 ```
-fusion-plugin: myFunction: core size (1361 terms) exceeds the specified size (1000 terms).
+fusion-plugin: function: core size (1361 terms) exceeds the specified size (1000 terms).
 ```
 
 ### Generating Core of a Function
@@ -225,8 +254,8 @@ Use `DumpCore` annotation to write the final simplified core of a function to a
 file in the compiler's dump directory (as set by `-dumpdir`), or under
 `fusion-plugin-output/<package-name>` when no dump directory is set:
 ```haskell
-{-# ANN myFunction DumpCore #-}
-myFunction :: ...
+{-# ANN function DumpCore #-}
+function :: ...
 ```
 
 To understand how the core of a function evolves through the optimizer, use the
@@ -236,8 +265,8 @@ Instead of dumping the whole module after each pass it dumps only the annotated
 binding, writing one file per pass named
 `<module>.<binding>.<NN-pass>.dump-simpl`:
 ```haskell
-{-# ANN myFunction DumpCorePasses #-}
-myFunction :: ...
+{-# ANN function DumpCorePasses #-}
+function :: ...
 ```
 
 ## Compiling Code with the Plugin

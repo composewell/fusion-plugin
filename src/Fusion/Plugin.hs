@@ -961,6 +961,12 @@ inspectPredicate
 inspectPredicate _ (ForbidBoxedUse thNames) = do
     names <- resolveTHNames thNames
     return (\n -> n `elem` names, [], const True)
+inspectPredicate _ (ForbidPatternMatches thNames) = do
+    names <- resolveTHNames thNames
+    return (\n -> n `elem` names, [], isPatternMatch)
+inspectPredicate _ (ForbidAllocations thNames) = do
+    names <- resolveTHNames thNames
+    return (\n -> n `elem` names, [], isConstruction)
 inspectPredicate anns (ForbidFused thForbid thAllow) = do
     forbidden <- resolveTHNames thForbid
     allowed <- resolveTHNames thAllow
@@ -990,7 +996,9 @@ permitAllowList _ = Nothing
 
 forbiddenLabel :: InspectTypes -> String
 forbiddenLabel (PermitAllocations _) = "forbidden allocations"
+forbiddenLabel (ForbidAllocations _) = "forbidden allocations"
 forbiddenLabel (PermitPatternMatches _) = "forbidden pattern matches"
+forbiddenLabel (ForbidPatternMatches _) = "forbidden pattern matches"
 forbiddenLabel _ = "forbidden types"
 
 -------------------------------------------------------------------------------
@@ -1066,6 +1074,10 @@ instance Outputable Fuse where
 -- no instance for 'TH.Name').
 instance Outputable InspectTypes where
     ppr (ForbidBoxedUse names) = text "ForbidBoxedUse" <+> text (show names)
+    ppr (ForbidPatternMatches names) =
+        text "ForbidPatternMatches" <+> text (show names)
+    ppr (ForbidAllocations names) =
+        text "ForbidAllocations" <+> text (show names)
     ppr (ForbidFused f a) =
         text "ForbidFused" <+> text (show f) <+> text (show a)
     ppr (PermitBoxedUse names) = text "PermitBoxedUse" <+> text (show names)
