@@ -48,8 +48,6 @@ module Fusion.Plugin
 where
 
 
-#include "Fusion/Plugin/Common.h"
-
 #if MIN_VERSION_ghc(8,6,0)
 import Control.Monad (when, unless, forM_, void)
 import Control.Monad.Trans.State (StateT, evalStateT, get, put)
