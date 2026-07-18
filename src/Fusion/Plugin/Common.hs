@@ -115,6 +115,13 @@ import GhcPlugins
 
 import Fusion.Plugin.Types
 
+-- GHC-9.6 renamed 'PrintUnqualified' to 'NamePprCtx'.
+#if MIN_VERSION_ghc(9,6,0)
+#define PRINT_UNQUAL NamePprCtx
+#else
+#define PRINT_UNQUAL PrintUnqualified
+#endif
+
 #if MIN_VERSION_ghc(8,6,0)
 
 

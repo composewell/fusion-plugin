@@ -54,6 +54,19 @@ import Fusion.Plugin.Common
     , showWithUnique
     )
 
+#if MIN_VERSION_ghc(9,0,0)
+#define IS_ACTIVE isActive (Phase 0)
+#else
+#define IS_ACTIVE isActiveIn 0
+#endif
+
+-- Keyed by 'OccName' string rather than by 'Name'/'Unique'. A top-level Id's
+-- Unique -- and even its 'NameSort' -- is not guaranteed to survive the
+-- Core-to-core passes while OccName stays the same.
+#define FUSE_TYPES_FM Map.Map String FuseTypes
+#define NO_FUSE_TYPES_FM Map.Map String NoFuseTypes
+#define NO_FUSE_FM Map.Map String NoFuse
+
 #if MIN_VERSION_ghc(8,6,0)
 
 

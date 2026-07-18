@@ -108,6 +108,8 @@ import Fusion.Plugin.Inspect
     ( fusionReport
     )
 
+#define DUMP_CORE_PASSES_FM Map.Map String DumpCorePasses
+
 -- $using
 --
 -- This plugin was primarily motivated by fusion issues discovered in

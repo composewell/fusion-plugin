@@ -65,6 +65,15 @@ import Fusion.Plugin.Common
     , subsumedBySameName
     )
 
+-- Keyed by 'OccName' string rather than by 'Name'/'Unique'. A top-level Id's
+-- Unique -- and even its 'NameSort' -- is not guaranteed to survive the
+-- Core-to-core passes while OccName stays the same.
+#define INSPECT_PM_FM Map.Map String InspectPatternMatches
+#define INSPECT_ALLOC_FM Map.Map String InspectAllocations
+#define INSPECT_CLASSES_FM Map.Map String InspectTypeClasses
+#define MAX_CORE_SIZE_FM Map.Map String MaxCoreSize
+#define DUMP_CORE_FM Map.Map String DumpCore
+
 #if MIN_VERSION_ghc(8,6,0)
 
 -------------------------------------------------------------------------------
