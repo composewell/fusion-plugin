@@ -472,6 +472,14 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 #define DUMP_CORE_FM Map.Map String DumpCore
 #define DUMP_CORE_PASSES_FM Map.Map String DumpCorePasses
 
+data InspectAnns = InspectAnns
+    { iaPatternMatches :: INSPECT_PM_FM
+    , iaAllocations    :: INSPECT_ALLOC_FM
+    , iaClasses        :: INSPECT_CLASSES_FM
+    , iaSizes          :: MAX_CORE_SIZE_FM
+    , iaDumps          :: DUMP_CORE_FM
+    }
+
 -- GHC-9.6 renamed 'PrintUnqualified' to 'NamePprCtx'.
 #if MIN_VERSION_ghc(9,6,0)
 #define PRINT_UNQUAL NamePprCtx
@@ -1897,16 +1905,15 @@ liveTopLevelBinders guts = go initial initial
 failOnUnmatchedAnns
     :: DynFlags -> String -> String
     -> [CoreBind] -> [(CoreBndr, CoreExpr)]
-    -> INSPECT_PM_FM -> INSPECT_ALLOC_FM -> INSPECT_CLASSES_FM
-    -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
+    -> InspectAnns
     -> CoreM ()
-failOnUnmatchedAnns dflags pkgName modName allTopBinds allBinds
-        pmAnns allocAnns classAnns sizeAnns dumpAnns = do
+failOnUnmatchedAnns dflags pkgName modName allTopBinds allBinds anns = do
     let candidateKeys = DL.nub (concatMap (binderAnnKeys . fst) allBinds)
         unmatched =
             filter (`notElem` candidateKeys) $ DL.nub
-                ( Map.keys pmAnns ++ Map.keys allocAnns ++ Map.keys classAnns
-               ++ Map.keys sizeAnns ++ Map.keys dumpAnns )
+                ( Map.keys (iaPatternMatches anns)
+               ++ Map.keys (iaAllocations anns) ++ Map.keys (iaClasses anns)
+               ++ Map.keys (iaSizes anns) ++ Map.keys (iaDumps anns) )
     mapM_
         (\k ->
             putMsgS $ "fusion-plugin: " ++ k
@@ -1943,6 +1950,13 @@ fusionReport mesg reportMode runInspect opts guts = do
     sizeAnns  <- getAnns "MaxCoreSize"
     dumpAnns  <- getAnns "DumpCore"
     classAnns <- getAnns "InspectTypeClasses"
+    let inspectAnns = InspectAnns
+            { iaPatternMatches = pmAnns
+            , iaAllocations    = allocAnns
+            , iaClasses        = classAnns
+            , iaSizes          = sizeAnns
+            , iaDumps          = dumpAnns
+            }
     let anyInspect =
             runInspect && (not (Map.null pmAnns) || not (Map.null allocAnns))
         anyInspectClasses = runInspect && not (Map.null classAnns)
@@ -1972,15 +1986,14 @@ fusionReport mesg reportMode runInspect opts guts = do
                 then fmap sum
                         $ mapM
                             (transformBind
-                                dflags anns pmAnns allocAnns classAnns sizeAnns
-                                dumpAnns pkgName modName liveBndrs allBinds)
+                                dflags anns inspectAnns
+                                pkgName modName liveBndrs allBinds)
                         $ mg_binds guts
                 else return 0
             -- Fail on any inspection annotation whose target has no
             -- corresponding binding in the final core.
             failOnUnmatchedAnns
-                dflags pkgName modName (mg_binds guts) allBinds
-                pmAnns allocAnns classAnns sizeAnns dumpAnns
+                dflags pkgName modName (mg_binds guts) allBinds inspectAnns
             when (optionsWError opts && violations > 0) $ do
                 putMsgS $ "fusion-plugin: " ++ show violations
                         ++ " annotation violation(s) reported in " ++ modName
@@ -1995,12 +2008,16 @@ fusionReport mesg reportMode runInspect opts guts = do
     -- Returns the number of annotation-check violations reported for this
     -- binding (the module-wide unfused report below is not counted).
     transformBind
-        :: DynFlags -> UNIQ_FM -> INSPECT_PM_FM -> INSPECT_ALLOC_FM
-        -> INSPECT_CLASSES_FM -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
+        :: DynFlags -> UNIQ_FM -> InspectAnns
         -> String -> String -> VarSet -> [(CoreBndr, CoreExpr)]
         -> CoreBind -> CoreM Int
-    transformBind dflags anns pmAnns allocAnns classAnns sizeAnns dumpAnns
+    transformBind dflags anns iAnns
             pkgName modName liveBndrs allBinds bind@(NonRec b _) = do
+        let pmAnns    = iaPatternMatches iAnns
+            allocAnns = iaAllocations iAnns
+            classAnns = iaClasses iAnns
+            sizeAnns  = iaSizes iAnns
+            dumpAnns  = iaDumps iAnns
         n1 <- if runInspect
               then reportInspected
                        dflags reportMode anns pmAnns allocAnns allBinds bind
@@ -2072,13 +2089,13 @@ fusionReport mesg reportMode runInspect opts guts = do
                         uniqConstr constrs showDetailsConstr
         return (n1 + n2 + n3)
 
-    transformBind dflags anns pmAnns allocAnns classAnns sizeAnns dumpAnns
+    transformBind dflags anns iAnns
             pkgName modName liveBndrs allBinds (Rec bs) =
         fmap sum
             $ mapM
                 (\(b, expr) ->
                     transformBind
-                        dflags anns pmAnns allocAnns classAnns sizeAnns dumpAnns
+                        dflags anns iAnns
                         pkgName modName liveBndrs allBinds (NonRec b expr))
                 bs
 
