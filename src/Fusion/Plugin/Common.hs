@@ -3,7 +3,65 @@
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE CPP #-}
 
-module Fusion.Plugin.Common where
+module Fusion.Plugin.Common
+    (
+    -- * Options and reporting mode
+      ReportMode(..)
+    , Options(..)
+    , defaultOptions
+
+    -- * Debug helpers
+    , dbgLevel
+    , debug
+    , showWithUnique
+    , listPath
+
+    -- * Annotation lookup
+    , getAnnotationsByStableName
+    , resolveTHNames
+    , binderAnnKeys
+    , lookupBinderAnn
+    , subsumedBySameName
+    , binderClosure
+
+    -- * Context / annotation traversal
+    , Context(..)
+    , altsContainsAnn
+    , getNonRecBinder
+    , containsAnns
+    , contextTyConName
+    , contextQualifiedName
+    , filterExcluded
+    , isPatternMatch
+    , isConstruction
+    , keepHeapAllocatedOnly
+
+    -- * Reporting primitives
+    , qualifiedName
+    , qualifiedTyConName
+    , showDetailsCaseMatch
+    , showDetailsScrutinize
+    , showDetailsConstr
+    , showInfo
+
+    -- * Package/module names and core size
+    , modulePackageName
+    , coreSizesFile
+    , dumpCoreSize
+
+    -- * Core dumping
+    , dumpBindCore
+    , dumpAllBindsCore
+    , dumpCore
+    , liveTopLevelBinders
+
+    -- * Pass wiring
+    , insertDumpPasses
+    , insertAfterSimplPhase0
+    , isFusionPluginMarker
+    , fusionPluginMarker
+    )
+where
 
 #include "Fusion/Plugin/Common.h"
 

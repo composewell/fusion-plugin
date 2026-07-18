@@ -3,7 +3,10 @@
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE CPP #-}
 
-module Fusion.Plugin.Inspect where
+module Fusion.Plugin.Inspect
+    ( fusionReport
+    )
+where
 
 #include "Fusion/Plugin/Common.h"
 

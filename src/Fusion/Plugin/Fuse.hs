@@ -3,7 +3,12 @@
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE CPP #-}
 
-module Fusion.Plugin.Fuse where
+module Fusion.Plugin.Fuse
+    ( markInline
+    , fusionMarkInline
+    , fusionSimplify
+    )
+where
 
 #include "Fusion/Plugin/Common.h"
 
