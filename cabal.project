@@ -3,4 +3,4 @@ packages: fusion-plugin.cabal
 source-repository-package
   type: git
   location: https://github.com/composewell/fusion-plugin-types.git
-  tag: cfd6e81b6f44e72b51fc845aeece0b1680367cb9
+  tag: 1f21d07917b62e1b9a5327f930bd31168441d505
