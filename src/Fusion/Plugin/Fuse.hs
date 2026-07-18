@@ -1,4 +1,7 @@
 {-# LANGUAGE CPP #-}
+#if __GLASGOW_HASKELL__ < 900
+{-# OPTIONS_GHC -Wno-incomplete-record-updates #-}
+#endif
 
 module Fusion.Plugin.Fuse
     ( fusionMarkInline

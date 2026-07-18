@@ -56,9 +56,12 @@ import Data.Char (isDigit)
 import Data.Data (Data)
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Word (Word8)
-import Debug.Trace (trace)
+import qualified Debug.Trace as Trace
 import System.Directory (createDirectoryIfMissing)
-import System.FilePath ((</>), takeFileName)
+import System.FilePath ((</>))
+#if __GLASGOW_HASKELL__ != 900
+import System.FilePath (takeFileName)
+#endif
 import qualified Data.List as DL
 import qualified Data.Map.Strict as Map
 import qualified Language.Haskell.TH.Syntax as TH
@@ -91,8 +94,7 @@ import Control.Monad (unless)
 import Data.Char (isSpace)
 import Data.IORef (readIORef, writeIORef)
 import Data.Time (getCurrentTime)
-import System.Directory (createDirectoryIfMissing)
-import System.FilePath ((</>), takeDirectory)
+import System.FilePath (takeDirectory)
 import System.IO (Handle, IOMode(..), withFile, hSetEncoding, utf8)
 import Text.Printf (printf)
 import ErrUtils (mkDumpDoc, Severity(..))
@@ -104,7 +106,9 @@ import qualified Data.Set as Set
 -- Implicit imports
 #if MIN_VERSION_ghc(9,0,0)
 import GHC.Plugins
+#if __GLASGOW_HASKELL__ != 900
 import qualified GHC.Plugins as GhcPlugins
+#endif
 #else
 import GhcPlugins
 #endif
@@ -126,7 +130,7 @@ dbgLevel = 0
 debug :: Int -> String -> a -> a
 debug level str x =
     if dbgLevel >= level
-    then trace str x
+    then Trace.trace str x
     else x
 
 showBndr :: Outputable a => DynFlags -> a -> String
@@ -465,11 +469,13 @@ pluginDumpStem :: DynFlags -> String -> String -> FilePath
 pluginDumpStem dflags pkgName modName =
     pluginDumpDir dflags pkgName </> (modName ++ ".")
 
+#if __GLASGOW_HASKELL__ != 900
 pluginDumpPrefix :: DynFlags -> String -> String -> FilePath
 pluginDumpPrefix dflags pkgName modName =
     case dumpDir dflags of
         Just _  -> modName ++ "."
         Nothing -> fallbackDumpDir pkgName </> (modName ++ ".")
+#endif
 
 -- | Split a string on @\'-\'@ characters.
 splitOnDash :: String -> [String]
