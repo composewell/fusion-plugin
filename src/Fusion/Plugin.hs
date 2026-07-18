@@ -1675,20 +1675,6 @@ dumpBindCorePass dflags counter title pkgName modName allBinds b =
     void $ writeBindCore dflags pkgName modName
         ("." ++ dumpCoreSuffix dflags counter title ++ "dump-simpl") allBinds b
 
--- | If the given top level bind's own binder carries a 'DumpCore' annotation,
--- write the Core of that binding to a file (see 'dumpBindCore'). No-op if the
--- binder is not annotated.
-reportDumpCore ::
-    DynFlags -> String -> String -> DUMP_CORE_FM -> [(CoreBndr, CoreExpr)]
-    -> CoreBind -> CoreM ()
-reportDumpCore dflags pkgName modName dumpAnns allBinds (NonRec b _) =
-    case lookupBinderAnn b dumpAnns of
-        Just _ | not (subsumedBySameName allBinds b) ->
-            dumpBindCore dflags pkgName modName allBinds b
-        _ -> return ()
-reportDumpCore _ _ _ _ _ (Rec _) =
-    error "reportDumpCore: expecting only NonRec binders"
-
 dumpAllBindsCore :: DynFlags -> String -> String -> [CoreBind] -> CoreM ()
 dumpAllBindsCore dflags pkgName modName binds = do
     let dir = pluginDumpDir dflags pkgName
@@ -2041,20 +2027,21 @@ fusionReport
         n3 <- if runInspect
               then reportCoreSize dflags reportMode sizeAnns allBinds bind
               else return 0
-        when runInspect $
-            reportDumpCore dflags pkgName modName dumpAnns allBinds bind
         let hasViolationAnn =
                    isJust (lookupBinderAnn b pmAnns)
                 || isJust (lookupBinderAnn b allocAnns)
                 || isJust (lookupBinderAnn b classAnns)
                 || isJust (lookupBinderAnn b sizeAnns)
+            hasDumpAnn = isJust (lookupBinderAnn b dumpAnns)
             notSubsumed = not (subsumedBySameName allBinds b)
         when (runInspect && dumpCoreSizes && hasViolationAnn && notSubsumed) $
             dumpCoreSize dflags pkgName modName allBinds b
-        let shouldDump =
-                   (dumpCoreIfAnnotated && hasViolationAnn)
-                || (dumpCoreIfViolated && n1 + n2 + n3 > 0)
-        when (runInspect && shouldDump && notSubsumed) $
+        let shouldDump
+                | hasDumpAnn = True
+                | otherwise =
+                       (dumpCoreIfAnnotated && hasViolationAnn)
+                    || (dumpCoreIfViolated && n1 + n2 + n3 > 0)
+        when (shouldDump && notSubsumed) $
             dumpBindCore dflags pkgName modName allBinds b
         when (b `elemVarSet` liveBndrs) $ do
             let results = keepHeapAllocatedOnly
