@@ -1,5 +1,4 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
-{-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE CPP #-}
 
 module Fusion.Plugin.Common
@@ -50,6 +49,67 @@ where
 
 #include "Fusion/Plugin/Common.h"
 
+#if MIN_VERSION_ghc(8,6,0)
+-- Imports for all compiler versions
+import Control.Monad (when)
+import Data.Char (isDigit)
+import Data.Data (Data)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
+import Data.Word (Word8)
+import Debug.Trace (trace)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>), takeFileName)
+import qualified Data.List as DL
+import qualified Data.Map.Strict as Map
+import qualified Language.Haskell.TH.Syntax as TH
+
+-- Imports for specific compiler versions
+#if MIN_VERSION_ghc(9,6,0)
+import Data.Char (isSpace)
+import Text.Printf (printf)
+import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
+import GHC.Types.Name.Ppr (mkNamePprCtx)
+import GHC.Utils.Logger (Logger)
+#elif MIN_VERSION_ghc(9,2,0)
+import Data.Char (isSpace)
+import Text.Printf (printf)
+import GHC.Core.Ppr (pprCoreBindingsWithSize, pprRules)
+import GHC.Types.Name.Ppr (mkPrintUnqualified)
+import GHC.Utils.Logger (Logger)
+#endif
+
+-- dump-core option related imports
+#if MIN_VERSION_ghc(9,3,0)
+import GHC.Utils.Logger (putDumpFile, logFlags, LogFlags(..))
+#elif MIN_VERSION_ghc(9,2,0)
+import GHC.Utils.Logger (putDumpMsg)
+#elif MIN_VERSION_ghc(9,0,0)
+import Data.Char (isSpace)
+import Text.Printf (printf)
+#else
+import Control.Monad (unless)
+import Data.Char (isSpace)
+import Data.IORef (readIORef, writeIORef)
+import Data.Time (getCurrentTime)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>), takeDirectory)
+import System.IO (Handle, IOMode(..), withFile, hSetEncoding, utf8)
+import Text.Printf (printf)
+import ErrUtils (mkDumpDoc, Severity(..))
+import PprCore (pprCoreBindingsWithSize, pprRules)
+import qualified Data.Set as Set
+#endif
+#endif
+
+-- Implicit imports
+#if MIN_VERSION_ghc(9,0,0)
+import GHC.Plugins
+import qualified GHC.Plugins as GhcPlugins
+#else
+import GhcPlugins
+#endif
+
+import Fusion.Plugin.Types
 
 #if MIN_VERSION_ghc(8,6,0)
 

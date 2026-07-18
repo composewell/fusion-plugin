@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE CPP #-}
 
 module Fusion.Plugin.Fuse
@@ -8,6 +7,30 @@ module Fusion.Plugin.Fuse
 where
 
 #include "Fusion/Plugin/Common.h"
+
+#if MIN_VERSION_ghc(8,6,0)
+import Control.Monad (when)
+import Data.Either (partitionEithers)
+import Data.Maybe (isJust)
+import Data.Generics.Schemes (everywhere)
+import Data.Generics.Aliases (mkT)
+import qualified Data.List as DL
+import qualified Data.Map.Strict as Map
+
+#if MIN_VERSION_ghc(9,6,0)
+import GHC.Core.Lint.Interactive (interactiveInScope)
+import GHC.Driver.Config.Core.Opt.Simplify (initSimplMode, initSimplifyOpts)
+#endif
+#endif
+
+-- Implicit imports
+#if MIN_VERSION_ghc(9,0,0)
+import GHC.Plugins
+#else
+import GhcPlugins
+#endif
+
+import Fusion.Plugin.Types
 
 import Fusion.Plugin.Common
     ( ReportMode(..)

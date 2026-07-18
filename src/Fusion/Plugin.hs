@@ -31,7 +31,6 @@
 -- At the right places, fusion can provide dramatic performance improvements
 -- (e.g. 10x) to the code.
 
-{-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE CPP #-}
 
 module Fusion.Plugin
@@ -50,6 +49,43 @@ where
 
 
 #include "Fusion/Plugin/Common.h"
+
+#if MIN_VERSION_ghc(8,6,0)
+import Control.Monad (when, unless, forM_, void)
+import Control.Monad.Trans.State (StateT, evalStateT, get, put)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Maybe (fromMaybe)
+import System.FilePath ((</>))
+import qualified Data.Map.Strict as Map
+
+#if MIN_VERSION_ghc(9,6,0)
+import GHC.Core.Opt.Simplify.Env (SimplMode(..))
+import GHC.Core.Opt.Simplify (SimplifyOpts(..))
+#endif
+
+#if MIN_VERSION_ghc(9,14,0)
+import GHC.Unit.Env (ue_hpt)
+import GHC.Unit.Home.ModInfo (HomeModInfo(..))
+import GHC.Unit.Home.PackageTable (concatHpt)
+import GHC.Unit.Module.ModDetails (ModDetails(..))
+#endif
+#endif
+
+-- Implicit imports
+#if MIN_VERSION_ghc(9,0,0)
+import GHC.Plugins
+import qualified GHC.Plugins as GhcPlugins
+#else
+import GhcPlugins
+#endif
+
+#if MIN_VERSION_ghc(9,0,0) && !MIN_VERSION_ghc(9,2,0)
+import GHC.Utils.Panic (throwGhcExceptionIO, GhcException(ProgramError))
+#elif !MIN_VERSION_ghc(9,0,0)
+import Panic (throwGhcExceptionIO, GhcException(ProgramError))
+#endif
+
+import Fusion.Plugin.Types
 
 import Fusion.Plugin.Common
     ( Options(..)

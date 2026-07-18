@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wno-unused-imports #-}
 {-# LANGUAGE CPP #-}
 
 module Fusion.Plugin.Inspect
@@ -7,6 +6,38 @@ module Fusion.Plugin.Inspect
 where
 
 #include "Fusion/Plugin/Common.h"
+
+#if MIN_VERSION_ghc(8,6,0)
+import Control.Monad (when, unless)
+import Data.Maybe (isJust, mapMaybe)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath ((</>), takeDirectory)
+import qualified Data.List as DL
+import qualified Data.Map.Strict as Map
+import qualified Language.Haskell.TH.Syntax as TH
+#endif
+
+-- Implicit imports
+#if MIN_VERSION_ghc(9,0,0)
+import GHC.Plugins
+#else
+import GhcPlugins
+#endif
+
+#if MIN_VERSION_ghc(9,0,0) && !MIN_VERSION_ghc(9,2,0)
+import GHC.Utils.Panic (throwGhcExceptionIO, GhcException(ProgramError))
+#elif !MIN_VERSION_ghc(9,0,0)
+import Panic (throwGhcExceptionIO, GhcException(ProgramError))
+#endif
+
+-- Core size reporting
+#if MIN_VERSION_ghc(9,0,0)
+import GHC.Core.Stats (exprStats, CoreStats(cs_tm))
+#else
+import CoreStats (exprStats, CoreStats(cs_tm))
+#endif
+
+import Fusion.Plugin.Types
 
 import Fusion.Plugin.Common
     ( Options(..)
