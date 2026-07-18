@@ -52,6 +52,11 @@ source-repository head
 
 library
   exposed-modules:     Fusion.Plugin
+  other-modules:       Fusion.Plugin.Common
+                     , Fusion.Plugin.Fuse
+                     , Fusion.Plugin.Inspect
+  include-dirs:        src
+  install-includes:    Fusion/Plugin/Common.h
   build-depends:       base             >= 4.0     && < 5
                      , containers       >= 0.5.6.2 && < 0.9
                      , directory        >= 1.2.2.0 && < 1.4
