@@ -1,5 +1,8 @@
 packages: fusion-plugin.cabal
 
+package fusion-plugin
+  ghc-options: -Werror
+
 source-repository-package
   type: git
   location: https://github.com/composewell/fusion-plugin-types.git
