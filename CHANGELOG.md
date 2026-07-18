@@ -1,15 +1,19 @@
 ## Unreleased
 
-* Add the following annotation types:
+* Add the following fusion annotations:
   * `FuseTypes`: mark specified types fusible within a specific binding.
   * `NoFuseTypes`: disable `Fuse` annotations on the specified types
     within a specific binding.
   * `NoFuse`: disable forced inlining within a specific binding
     altogether, irrespective of type.
-  * `InspectTypes`: Forbid or permit existence of given types within a
-    binding.
+* Add the following type inspection annotations:
+  * `InspectPatternMatches`: Forbid or permit pattern-matching (scrutinizing)
+    of given types within a binding.
+  * `InspectAllocations`: Forbid or permit allocation (construction) of given
+    types within a binding.
   * `InspectTypeClasses`: Forbid or permit existence of given type
     classe dictionaries within a binding.
+* Add the following core inspection annotations:
   * `MaxCoreSize`: report the size of the optimized Core of a binding.
   * `DumpCore`: write the core of a specific binding to a file.
   * `DumpCorePasses`: write the core of a specific binding to a file
@@ -17,18 +21,23 @@
     `dump-core` CLI option).
 * Added the following CLI options:
   * `dump-core-sizes`: the core size of every binding carrying a
-    violation-causing annotation (`InspectTypes`, `InspectTypeClasses`
-    or `MaxCoreSize`) is appended to a file.
+    violation-causing annotation (`InspectPatternMatches`,
+    `InspectAllocations`, `InspectTypeClasses` or `MaxCoreSize`) is appended to
+    a file.
   * `dump-core-if-annotated`: write the final core of every
-    binding carrying a violation-causing annotation (`InspectTypes`,
-    `InspectTypeClasses` or `MaxCoreSize`),
+    binding carrying a violation-causing annotation (`InspectPatternMatches`,
+    `InspectAllocations`, `InspectTypeClasses` or `MaxCoreSize`),
   * `dump-core-if-violated`: if a violation occurs write the core of the
     binding to a file.
   * `csv-append`: append to the `core-sizes.csv` files (a header row plus
     the run's rows) instead of truncating them on each compilation.
+
+Bug fixes:
 * Fix the `dump-core` CLI option which stopped working on GHC-9.6 and
   above due to upstream API changes (`PrintUnqualified` renamed to
   `NamePprCtx`, `mkPrintUnqualified` renamed to `mkNamePprCtx`).
+
+Behavior changes:
 * The `dump-core` CLI option now names its output files by module name
   (`<dump-dir>/<module-name>.<NN-pass>.dump-simpl`).
 

@@ -123,50 +123,54 @@ function :: ...
 
 ### Inspecting Boxed Types within a Function
 
-To verify elimination of certain types within a function annotate the
-function with `InspectTypes`. If a violation is found the plugin will complain
-providing details of the violation. When `werror` plugin options is used it
-will fail the compilation on violation.
+To verify elimination of certain types within a function annotate
+the function with `InspectAllocations` (types constructed/allocated)
+and/or `InspectPatternMatches` (types scrutinized in a `case`). If
+a violation is found the plugin will complain providing details of the
+violation. When the `werror` plugin option is used it will fail the
+compilation on violation.
+
+The two annotation types are independent, so a single binding may carry
+one of each to inspect both the constructing and the scrutinizing
+position at once. All the examples below use the allocation variant;
+each has an analogous `...PatternMatches` counterpart.
 
 ```haskell
 {-# LANGUAGE TemplateHaskellQuotes #-}
 
-import Fusion.Plugin.Types (InspectTypes(..))
+import Fusion.Plugin.Types (InspectAllocations(..), InspectPatternMatches(..))
 ```
 
 ### Using `Fuse` Annotated as Baseline
 
-Complain if any `Fuse` annotated type is found in the function.
+Complain if any `Fuse` annotated type is allocated in the function.
 ```haskell
-{-# ANN function (ForbidFused [] []) #-}
+{-# ANN function (ForbidFusedAllocations [] []) #-}
 function1 :: ...
 ```
 
 Also forbid `Maybe` as well even though it isn't Fuse-annotated.
 ```haskell
-{-# ANN function (ForbidFused [''Maybe] []) #-}
+{-# ANN function (ForbidFusedAllocations [''Maybe] []) #-}
 function1a :: ...
 ```
 
 Disallow `Maybe`, but explicitly allow `Step` even though it is Fuse-annotated
 we allow it to be present in this binding.
 ```haskell
-{-# ANN function (ForbidFused [''Maybe] [''Step]) #-}
+{-# ANN function (ForbidFusedAllocations [''Maybe] [''Step]) #-}
 function1b :: ...
 ```
 
 ### Forbidding Only Selected Types
 
 Disallow the specified types and allow the rest, irrespective of `Fuse`
-annotation. Both pattern macthes and allocations are checked.
+annotation. To check both allocations and pattern matches, attach one
+annotation of each type to the binding.
 ```haskell
-{-# ANN function (ForbidBoxedUse [''Step]) #-}
-function2 :: ...
-```
-
-Report the listed types only where they are pattern-matched:
-```haskell
+{-# ANN function (ForbidAllocations [''Step]) #-}
 {-# ANN function (ForbidPatternMatches [''Step]) #-}
+function2 :: ...
 ```
 
 Report the listed types only where they are allocated:
@@ -174,29 +178,36 @@ Report the listed types only where they are allocated:
 {-# ANN function (ForbidAllocations [''Step]) #-}
 ```
 
+Report the listed types only where they are pattern-matched:
+```haskell
+{-# ANN function (ForbidPatternMatches [''Step]) #-}
+```
+
 ### Permitting Only Selected Types
 
-Allow only the specified types and disallow all others.
-Both pattern macthes and allocations are checked.
+Allow only the specified types and disallow all others. To check both
+allocations and pattern matches, attach one annotation of each type to the
+binding.
 ```haskell
-{-# ANN function (PermitBoxedUse [''Int, ''IO]) #-}
+{-# ANN function (PermitAllocations [''Int, ''IO]) #-}
+{-# ANN function (PermitPatternMatches [''Int, ''IO]) #-}
 function3 :: ...
 ```
 
-To report all boxed types used within a function:
+To report every allocated type used within a function:
 ```haskell
-{-# ANN function (PermitBoxedUse []) #-}
+{-# ANN function (PermitAllocations []) #-}
 function4 :: ...
-```
-
-Report every pattern-matched type except the listed ones:
-```haskell
-{-# ANN function (PermitPatternMatches [''Int, ''IO]) #-}
 ```
 
 Report every allocated type except the listed ones:
 ```haskell
 {-# ANN function (PermitAllocations [''Int, ''IO]) #-}
+```
+
+Report every pattern-matched type except the listed ones:
+```haskell
+{-# ANN function (PermitPatternMatches [''Int, ''IO]) #-}
 ```
 
 If any of the types in the permitted list is not actually found in the
@@ -291,8 +302,8 @@ violation.
 ### Detecting code bloat
 
 To record the core size of every binding that carries a violation-causing
-annotation (`InspectTypes`, `InspectTypeClasses` or `MaxCoreSize`) to a file,
-pass the `dump-core-sizes` option:
+annotation (`InspectPatternMatches`, `InspectAllocations`, `InspectTypeClasses`
+or `MaxCoreSize`) to a file, pass the `dump-core-sizes` option:
 ```
 ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
 ```
@@ -329,9 +340,9 @@ otherwise.  Each pass adds a `<NN-pass-name>.dump-simpl` suffix, e.g.
 ### Examining Before and After Core
 
 `dump-core-if-annotated` option dumps the core of every binding
-that carries a violation-causing annotation (`InspectTypes`,
-`InspectTypeClasses` or `MaxCoreSize`), without adding a `DumpCore`
-annotation to each one:
+that carries a violation-causing annotation (`InspectPatternMatches`,
+`InspectAllocations`, `InspectTypeClasses` or `MaxCoreSize`), without adding a
+`DumpCore` annotation to each one:
 ```
 ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-annotated
 ```

@@ -189,8 +189,8 @@ import Fusion.Plugin.Types
 -- Note: @dump-core@ does not work for GHC-9.0.x.
 --
 -- To record the optimized core size of every binding that carries a
--- violation-causing annotation ('InspectTypes', 'InspectTypeClasses' or
--- 'MaxCoreSize') to a CSV file, pass the following:
+-- violation-causing annotation ('InspectPatternMatches', 'InspectAllocations',
+-- 'InspectTypeClasses' or 'MaxCoreSize') to a CSV file, pass the following:
 --
 -- @
 -- ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
@@ -212,8 +212,8 @@ import Fusion.Plugin.Types
 -- @
 --
 -- To dump the Core of every binding that carries a violation-causing
--- annotation ('InspectTypes', 'InspectTypeClasses' or 'MaxCoreSize'), pass
--- the following:
+-- annotation ('InspectPatternMatches', 'InspectAllocations',
+-- 'InspectTypeClasses' or 'MaxCoreSize'), pass the following:
 --
 -- @
 -- ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-annotated
@@ -462,7 +462,8 @@ setInlineOnBndrs dflags bndrs = everywhere $ mkT go
 -- Keyed by 'OccName' string rather than by 'Name'/'Unique'. A top-level Id's
 -- Unique -- and even its 'NameSort' -- is not guaranteed to survive the
 -- Core-to-core passes while OccName stays the same.
-#define INSPECT_FM Map.Map String InspectTypes
+#define INSPECT_PM_FM Map.Map String InspectPatternMatches
+#define INSPECT_ALLOC_FM Map.Map String InspectAllocations
 #define INSPECT_CLASSES_FM Map.Map String InspectTypeClasses
 #define FUSE_TYPES_FM Map.Map String FuseTypes
 #define NO_FUSE_TYPES_FM Map.Map String NoFuseTypes
@@ -951,55 +952,107 @@ removeFuse anns noFuseAnns b =
         Nothing -> anns
         Just NoFuse -> emptyUFM
 
--- | Build the "isInteresting" predicate, the exclusion list, and the position
--- filter for a given 'InspectTypes' directive. The position filter selects
--- which occurrences count: all positions by default, or only the scrutinizing
--- ('PermitPatternMatches') or only the constructing ('PermitAllocations')
--- position.
-inspectPredicate
-    :: UNIQ_FM -> InspectTypes -> CoreM (Name -> Bool, [Name], Context -> Bool)
-inspectPredicate _ (ForbidBoxedUse thNames) = do
-    names <- resolveTHNames thNames
-    return (\n -> n `elem` names, [], const True)
-inspectPredicate _ (ForbidPatternMatches thNames) = do
-    names <- resolveTHNames thNames
-    return (\n -> n `elem` names, [], isPatternMatch)
-inspectPredicate _ (ForbidAllocations thNames) = do
-    names <- resolveTHNames thNames
-    return (\n -> n `elem` names, [], isConstruction)
-inspectPredicate anns (ForbidFused thForbid thAllow) = do
-    forbidden <- resolveTHNames thForbid
-    allowed <- resolveTHNames thAllow
-    return
-        ( \n -> isJust (lookupUFM anns n) || n `elem` forbidden
-        , allowed
-        , const True
-        )
-inspectPredicate _ (PermitBoxedUse thAllow) = do
-    allowed <- resolveTHNames thAllow
-    return (const True, allowed, const True)
-inspectPredicate _ (PermitPatternMatches thAllow) = do
-    allowed <- resolveTHNames thAllow
-    return (const True, allowed, isPatternMatch)
-inspectPredicate _ (PermitAllocations thAllow) = do
-    allowed <- resolveTHNames thAllow
-    return (const True, allowed, isConstruction)
+-- | The position-normalized form of an inspection directive. Both
+-- 'InspectPatternMatches' and 'InspectAllocations' are reduced to this common
+-- shape so that the reporting machinery need not know which one it came from;
+-- the two differ only in the position filter, the report labels, and the
+-- banner text captured here.
+data NormInspect = NormInspect
+    { niInteresting :: Name -> Bool
+    -- ^ The "isInteresting" predicate: which type 'Name's the directive cares
+    -- about.
+    , niExclusion   :: [Name]
+    -- ^ Names to exclude from the reported hits (the allow list).
+    , niPosition    :: Context -> Bool
+    -- ^ Position filter: keep only scrutinizing or only constructing hits.
+    , niPermit      :: Maybe (String, [TH.Name])
+    -- ^ For "permit" (allowlist) directives, the display name and allow list
+    -- used to warn about stale entries; 'Nothing' for "forbid" directives.
+    , niForbidLabel :: String
+    -- ^ Label used in the terse "found ..." report line.
+    , niBanner      :: String
+    -- ^ The directive rendered for the detailed report banner.
+    }
 
--- | For the "permit" (allowlist) directives, the directive's display name and
--- its allow list; 'Nothing' for the "forbid" directives, which have no
--- stale-entry warning.
-permitAllowList :: InspectTypes -> Maybe (String, [TH.Name])
-permitAllowList (PermitBoxedUse ns) = Just ("PermitBoxedUse", ns)
-permitAllowList (PermitPatternMatches ns) = Just ("PermitPatternMatches", ns)
-permitAllowList (PermitAllocations ns) = Just ("PermitAllocations", ns)
-permitAllowList _ = Nothing
+-- | Normalize an 'InspectPatternMatches' directive. All of its constructors
+-- act on the scrutinizing (pattern-match) position.
+normPatternMatches :: UNIQ_FM -> InspectPatternMatches -> CoreM NormInspect
+normPatternMatches anns d = do
+    (interesting, excl, permit, banner) <- case d of
+        ForbidPatternMatches thNames -> do
+            names <- resolveTHNames thNames
+            return
+                ( \n -> n `elem` names
+                , []
+                , Nothing
+                , "ForbidPatternMatches " ++ show thNames
+                )
+        ForbidFusedPatternMatches thForbid thAllow -> do
+            forbidden <- resolveTHNames thForbid
+            allowed <- resolveTHNames thAllow
+            return
+                ( \n -> isJust (lookupUFM anns n) || n `elem` forbidden
+                , allowed
+                , Nothing
+                , "ForbidFusedPatternMatches "
+                    ++ show thForbid ++ " " ++ show thAllow
+                )
+        PermitPatternMatches thAllow -> do
+            allowed <- resolveTHNames thAllow
+            return
+                ( const True
+                , allowed
+                , Just ("PermitPatternMatches", thAllow)
+                , "PermitPatternMatches " ++ show thAllow
+                )
+    return NormInspect
+        { niInteresting = interesting
+        , niExclusion = excl
+        , niPosition = isPatternMatch
+        , niPermit = permit
+        , niForbidLabel = "forbidden pattern matches"
+        , niBanner = banner
+        }
 
-forbiddenLabel :: InspectTypes -> String
-forbiddenLabel (PermitAllocations _) = "forbidden allocations"
-forbiddenLabel (ForbidAllocations _) = "forbidden allocations"
-forbiddenLabel (PermitPatternMatches _) = "forbidden pattern matches"
-forbiddenLabel (ForbidPatternMatches _) = "forbidden pattern matches"
-forbiddenLabel _ = "forbidden types"
+-- | Normalize an 'InspectAllocations' directive. All of its constructors act
+-- on the constructing (allocating) position.
+normAllocations :: UNIQ_FM -> InspectAllocations -> CoreM NormInspect
+normAllocations anns d = do
+    (interesting, excl, permit, banner) <- case d of
+        ForbidAllocations thNames -> do
+            names <- resolveTHNames thNames
+            return
+                ( \n -> n `elem` names
+                , []
+                , Nothing
+                , "ForbidAllocations " ++ show thNames
+                )
+        ForbidFusedAllocations thForbid thAllow -> do
+            forbidden <- resolveTHNames thForbid
+            allowed <- resolveTHNames thAllow
+            return
+                ( \n -> isJust (lookupUFM anns n) || n `elem` forbidden
+                , allowed
+                , Nothing
+                , "ForbidFusedAllocations "
+                    ++ show thForbid ++ " " ++ show thAllow
+                )
+        PermitAllocations thAllow -> do
+            allowed <- resolveTHNames thAllow
+            return
+                ( const True
+                , allowed
+                , Just ("PermitAllocations", thAllow)
+                , "PermitAllocations " ++ show thAllow
+                )
+    return NormInspect
+        { niInteresting = interesting
+        , niExclusion = excl
+        , niPosition = isConstruction
+        , niPermit = permit
+        , niForbidLabel = "forbidden allocations"
+        , niBanner = banner
+        }
 
 -------------------------------------------------------------------------------
 -- Core-to-core pass to mark interesting binders to be always inlined
@@ -1067,24 +1120,6 @@ showDetailsConstr dflags reportMode (binds, con) =
 -- Orphan instance for 'Fuse'
 instance Outputable Fuse where
     ppr _ = text "Fuse"
-
--- Orphan instance for 'InspectTypes', used only to print a banner naming the
--- directive that triggered a focused report; TH 'TH.Name's are shown via
--- their derived 'Show' instance rather than GHC's 'Outputable' (which has
--- no instance for 'TH.Name').
-instance Outputable InspectTypes where
-    ppr (ForbidBoxedUse names) = text "ForbidBoxedUse" <+> text (show names)
-    ppr (ForbidPatternMatches names) =
-        text "ForbidPatternMatches" <+> text (show names)
-    ppr (ForbidAllocations names) =
-        text "ForbidAllocations" <+> text (show names)
-    ppr (ForbidFused f a) =
-        text "ForbidFused" <+> text (show f) <+> text (show a)
-    ppr (PermitBoxedUse names) = text "PermitBoxedUse" <+> text (show names)
-    ppr (PermitPatternMatches names) =
-        text "PermitPatternMatches" <+> text (show names)
-    ppr (PermitAllocations names) =
-        text "PermitAllocations" <+> text (show names)
 
 -- Orphan instance for 'InspectTypeClasses', used only to print a banner naming
 -- the directive that triggered a focused report.
@@ -1233,28 +1268,37 @@ binderClosure binds root = go [root] emptyVarSet []
                                    (intersectVarSet (exprVarOccs e) topSet)
                     in go (refs ++ vs) (extendVarSet seen v) ((v, e) : acc)
 
--- | If the given top level bind's own binder carries an 'InspectTypes'
--- annotation, print a report of interesting types case-matched or
--- constructed anywhere in its RHS, per the annotation's rules. No-op if
--- the binder is not annotated, or if the binding has no offending types.
+-- | If the given top level bind's own binder carries an 'InspectPatternMatches'
+-- and/or an 'InspectAllocations' annotation, print a report of interesting
+-- types case-matched or constructed anywhere in its RHS, per the annotation's
+-- rules. A binding may carry one of each; both are processed. No-op if the
+-- binder is not annotated, or if the binding has no offending types.
 --
 -- The output honours the module-wide verbosity: at the default (or
 -- @verbose=1@) a single terse @found forbidden types@ line is printed; at
 -- @verbose=2@ and above the full "Inspecting ..." banner plus per-hit
 -- @SCRUTINIZE@/@CONSTRUCT@ breakdown is printed.
--- Returns 0 on no violations and 1 otherwise.
+-- Returns the number of directives (0, 1 or 2) that reported a violation.
 reportInspected
-    :: DynFlags -> ReportMode -> UNIQ_FM -> INSPECT_FM
+    :: DynFlags -> ReportMode -> UNIQ_FM -> INSPECT_PM_FM -> INSPECT_ALLOC_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
-reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
-    case lookupBinderAnn b inspectAnns of
-        Just ispec | not (subsumedBySameName allBinds b) -> go ispec
-        _ -> return 0
+reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
+    | subsumedBySameName allBinds b = return 0
+    | otherwise = do
+        n1 <- maybe (return 0)
+                (\d -> normPatternMatches anns d >>= go)
+                (lookupBinderAnn b pmAnns)
+        n2 <- maybe (return 0)
+                (\d -> normAllocations anns d >>= go)
+                (lookupBinderAnn b allocAnns)
+        return (n1 + n2)
 
     where
 
-    go ispec = do
-        (isInteresting, exclusion, inPosition) <- inspectPredicate anns ispec
+    go ni = do
+        let isInteresting = niInteresting ni
+            exclusion = niExclusion ni
+            inPosition = niPosition ni
         let allHits = filter (inPosition . snd)
                     $ keepHeapAllocatedOnly
                     $ concatMap
@@ -1262,22 +1306,22 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
                             containsAnns dflags isInteresting (NonRec v e))
                         (binderClosure allBinds b)
             results = filterExcluded exclusion allHits
-        warnStalePermitted ispec allHits
+        warnStalePermitted ni allHits
         if null results
         then return 0
         else do
             case reportMode of
-                ReportSilent -> terse ispec results
-                ReportWarn -> terse ispec results
-                _ -> detailed ispec results
+                ReportSilent -> terse ni results
+                ReportWarn -> terse ni results
+                _ -> detailed ni results
             return 1
 
     -- Warn about "permit" (allowlist) entries that never occur in the
     -- binding, so that stale types can be pruned from the permit list. The
     -- predicate for these directives is @const True@, so 'allHits' holds
     -- every (allocating) type occurrence in the relevant position(s).
-    warnStalePermitted ispec allHits =
-        case permitAllowList ispec of
+    warnStalePermitted ni allHits =
+        case niPermit ni of
             Nothing -> return ()
             Just (label, thAllow) -> do
                 allowed <- resolveTHNames thAllow
@@ -1291,17 +1335,17 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
                             ++ DL.intercalate ", " (map qualifiedName stale)
                             ++ "]"
 
-    terse ispec results =
+    terse ni results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
         in putMsgS $ "fusion-plugin: "
                    ++ getOccString (GET_NAME b)
-                   ++ ": found " ++ forbiddenLabel ispec ++ " ["
+                   ++ ": found " ++ niForbidLabel ni ++ " ["
                    ++ DL.intercalate ", " names ++ "]"
 
-    detailed ispec results = do
+    detailed ni results = do
         putMsgS $ "fusion-plugin: "
                 ++ showWithUnique dflags b
-                ++ ": inspecting (" ++ showSDoc dflags (ppr ispec) ++ ")..."
+                ++ ": inspecting (" ++ niBanner ni ++ ")..."
         let getAlts x =
                 case x of
                     (bs, CaseAlt alt) -> Just (bs, alt)
@@ -1321,7 +1365,7 @@ reportInspected dflags reportMode anns inspectAnns allBinds (NonRec b _) =
             uniqBinders patternMatches showDetailsCaseMatch
         showInfo b dflags reportMode "CONSTRUCT"
             uniqConstr constrs showDetailsConstr
-reportInspected _ _ _ _ _ (Rec _) =
+reportInspected _ _ _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
 
 -------------------------------------------------------------------------------
@@ -1808,14 +1852,15 @@ liveTopLevelBinders guts = go initial initial
 failOnUnmatchedAnns
     :: DynFlags -> String -> String
     -> [CoreBind] -> [(CoreBndr, CoreExpr)]
-    -> INSPECT_FM -> INSPECT_CLASSES_FM -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
+    -> INSPECT_PM_FM -> INSPECT_ALLOC_FM -> INSPECT_CLASSES_FM
+    -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
     -> CoreM ()
 failOnUnmatchedAnns dflags pkgName modName allTopBinds allBinds
-        inspectAnns classAnns sizeAnns dumpAnns = do
+        pmAnns allocAnns classAnns sizeAnns dumpAnns = do
     let candidateKeys = DL.nub (concatMap (binderAnnKeys . fst) allBinds)
         unmatched =
             filter (`notElem` candidateKeys) $ DL.nub
-                ( Map.keys inspectAnns ++ Map.keys classAnns
+                ( Map.keys pmAnns ++ Map.keys allocAnns ++ Map.keys classAnns
                ++ Map.keys sizeAnns ++ Map.keys dumpAnns )
     mapM_
         (\k ->
@@ -1835,20 +1880,26 @@ failOnUnmatchedAnns dflags pkgName modName allTopBinds allBinds
                   ++ " inspection annotation(s) matched no binding in "
                   ++ modName ++ "; failing the build."))
 
--- | @runInspect@ controls whether the per-binding 'InspectTypes' annotations are
+-- | @runInspect@ controls whether the per-binding inspection annotations are
 -- also processed. When @werror@ is set, the build is failed (after all
 -- annotation violations in the module have been reported) if any
--- annotation-check violation ('InspectTypes', 'InspectTypeClasses' or
--- 'MaxCoreSize') was found.
+-- annotation-check violation ('InspectPatternMatches', 'InspectAllocations',
+-- 'InspectTypeClasses' or 'MaxCoreSize') was found.
 fusionReport
     :: String -> ReportMode -> Bool -> Bool -> Bool -> Bool -> Bool -> Bool
     -> ModGuts -> CoreM ModGuts
 fusionReport
         mesg reportMode runInspect werror dumpCoreSizes dumpCoreIfAnnotated
         dumpCoreIfViolated csvAppend guts = do
-    inspectAnns <-
+    pmAnns <-
         if runInspect
-        then getAnnotationsByStableName "InspectTypes" deserializeWithData guts
+        then getAnnotationsByStableName
+                 "InspectPatternMatches" deserializeWithData guts
+        else return Map.empty
+    allocAnns <-
+        if runInspect
+        then getAnnotationsByStableName
+                 "InspectAllocations" deserializeWithData guts
         else return Map.empty
     sizeAnns <-
         if runInspect
@@ -1863,7 +1914,8 @@ fusionReport
         then getAnnotationsByStableName
                  "InspectTypeClasses" deserializeWithData guts
         else return Map.empty
-    let anyInspect = runInspect && not (Map.null inspectAnns)
+    let anyInspect =
+            runInspect && (not (Map.null pmAnns) || not (Map.null allocAnns))
         anyInspectClasses = runInspect && not (Map.null classAnns)
         anyMaxCoreSize = runInspect && not (Map.null sizeAnns)
         anyDumpCore = runInspect && not (Map.null dumpAnns)
@@ -1890,7 +1942,7 @@ fusionReport
                 then fmap sum
                         $ mapM
                             (transformBind
-                                dflags anns inspectAnns classAnns sizeAnns
+                                dflags anns pmAnns allocAnns classAnns sizeAnns
                                 dumpAnns pkgName modName liveBndrs allBinds)
                         $ mg_binds guts
                 else return 0
@@ -1898,7 +1950,7 @@ fusionReport
             -- corresponding binding in the final core.
             failOnUnmatchedAnns
                 dflags pkgName modName (mg_binds guts) allBinds
-                inspectAnns classAnns sizeAnns dumpAnns
+                pmAnns allocAnns classAnns sizeAnns dumpAnns
             when (werror && violations > 0) $ do
                 putMsgS $ "fusion-plugin: " ++ show violations
                         ++ " annotation violation(s) reported in " ++ modName
@@ -1913,14 +1965,15 @@ fusionReport
     -- Returns the number of annotation-check violations reported for this
     -- binding (the module-wide unfused report below is not counted).
     transformBind
-        :: DynFlags -> UNIQ_FM -> INSPECT_FM -> INSPECT_CLASSES_FM
-        -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
+        :: DynFlags -> UNIQ_FM -> INSPECT_PM_FM -> INSPECT_ALLOC_FM
+        -> INSPECT_CLASSES_FM -> MAX_CORE_SIZE_FM -> DUMP_CORE_FM
         -> String -> String -> VarSet -> [(CoreBndr, CoreExpr)]
         -> CoreBind -> CoreM Int
-    transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
+    transformBind dflags anns pmAnns allocAnns classAnns sizeAnns dumpAnns
             pkgName modName liveBndrs allBinds bind@(NonRec b _) = do
         n1 <- if runInspect
-              then reportInspected dflags reportMode anns inspectAnns allBinds bind
+              then reportInspected
+                       dflags reportMode anns pmAnns allocAnns allBinds bind
               else return 0
         n2 <- if runInspect
               then reportInspectedClasses
@@ -1932,7 +1985,8 @@ fusionReport
         when runInspect $
             reportDumpCore dflags pkgName modName dumpAnns allBinds bind
         let hasViolationAnn =
-                   isJust (lookupBinderAnn b inspectAnns)
+                   isJust (lookupBinderAnn b pmAnns)
+                || isJust (lookupBinderAnn b allocAnns)
                 || isJust (lookupBinderAnn b classAnns)
                 || isJust (lookupBinderAnn b sizeAnns)
             notSubsumed = not (subsumedBySameName allBinds b)
@@ -1986,13 +2040,13 @@ fusionReport
                         uniqConstr constrs showDetailsConstr
         return (n1 + n2 + n3)
 
-    transformBind dflags anns inspectAnns classAnns sizeAnns dumpAnns
+    transformBind dflags anns pmAnns allocAnns classAnns sizeAnns dumpAnns
             pkgName modName liveBndrs allBinds (Rec bs) =
         fmap sum
             $ mapM
                 (\(b, expr) ->
                     transformBind
-                        dflags anns inspectAnns classAnns sizeAnns dumpAnns
+                        dflags anns pmAnns allocAnns classAnns sizeAnns dumpAnns
                         pkgName modName liveBndrs allBinds (NonRec b expr))
                 bs
 
