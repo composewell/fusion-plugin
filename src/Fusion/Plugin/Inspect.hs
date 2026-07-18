@@ -11,7 +11,38 @@ where
 #include "Fusion/Plugin/Common.h"
 
 import Fusion.Plugin.Common
-import Fusion.Plugin.Fuse
+    ( Context(..)
+    , Options(..)
+    , ReportMode(..)
+    , binderAnnKeys
+    , binderClosure
+    , containsAnns
+    , contextQualifiedName
+    , contextTyConName
+    , coreSizesFile
+    , dumpAllBindsCore
+    , dumpBindCore
+    , dumpCoreSize
+    , filterExcluded
+    , getAnnotationsByStableName
+    , getNonRecBinder
+    , isConstruction
+    , isPatternMatch
+    , keepHeapAllocatedOnly
+    , listPath
+    , liveTopLevelBinders
+    , lookupBinderAnn
+    , modulePackageName
+    , qualifiedName
+    , qualifiedTyConName
+    , resolveTHNames
+    , showDetailsCaseMatch
+    , showDetailsConstr
+    , showDetailsScrutinize
+    , showInfo
+    , showWithUnique
+    , subsumedBySameName
+    )
 
 #if MIN_VERSION_ghc(8,6,0)
 

@@ -54,8 +54,21 @@ where
 #include "Fusion/Plugin/Common.h"
 
 import Fusion.Plugin.Common
+    ( Options(..)
+    , ReportMode(..)
+    , defaultOptions
+    , fusionPluginMarker
+    , insertAfterSimplPhase0
+    , insertDumpPasses
+    , isFusionPluginMarker
+    )
 import Fusion.Plugin.Fuse
+    ( fusionMarkInline
+    , fusionSimplify
+    )
 import Fusion.Plugin.Inspect
+    ( fusionReport
+    )
 
 -- $using
 --

@@ -4,8 +4,7 @@
 {-# LANGUAGE CPP #-}
 
 module Fusion.Plugin.Fuse
-    ( markInline
-    , fusionMarkInline
+    ( fusionMarkInline
     , fusionSimplify
     )
 where
@@ -13,6 +12,23 @@ where
 #include "Fusion/Plugin/Common.h"
 
 import Fusion.Plugin.Common
+    ( ReportMode(..)
+    , altsContainsAnn
+    , dbgLevel
+    , debug
+    , dumpBindCore
+    , dumpCore
+    , getAnnotationsByStableName
+    , getNonRecBinder
+    , listPath
+    , modulePackageName
+    , qualifiedTyConName
+    , resolveTHNames
+    , showDetailsCaseMatch
+    , showDetailsConstr
+    , showInfo
+    , showWithUnique
+    )
 
 #if MIN_VERSION_ghc(8,6,0)
 
