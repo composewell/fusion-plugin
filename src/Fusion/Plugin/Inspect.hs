@@ -146,12 +146,16 @@ containsAnns dflags isInteresting bind =
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
 
-    -- Check if the Var is of the type of a data constructor of interest
-    go parents (Var i) =
-        case tyConAppTyConPicky_maybe (varType i) of
-            Just tycon | isInteresting (getName tycon) ->
-                [(parents, Constr i)]
-            _ -> []
+    -- A bare 'Var' is an allocation only when it is a nullary data
+    -- constructor (e.g. @Nothing@, @[]@); an ordinary variable reference of a
+    -- boxed type (e.g. an @Int@-typed argument) allocates nothing -- the box
+    -- was built elsewhere. Guarding on 'isDataConId_maybe' (as the 'App'
+    -- branch does) avoids reporting such references as constructions.
+    go parents (Var i)
+        | Just dcon <- isDataConId_maybe i
+        , isInteresting (getName (dataConTyCon dcon)) =
+            [(parents, Constr i)]
+        | otherwise = []
 
     -- There are no let bindings in these.
     go _ (Lit _) = []
