@@ -443,7 +443,8 @@ reportInspected
             Nothing -> return ()
             Just (label, thAllow) -> do
                 allowed <- resolveTHNames thAllow
-                let present = mapMaybe (contextTyConName . snd) allHits
+                let hits = if inspectUnboxed then allHits else keepBoxedOnly allHits
+                    present = mapMaybe (contextTyConName . snd) hits
                     stale = filter (`notElem` present) allowed
                 unless (null stale) $
                     putMsgS $ "fusion-plugin: "
