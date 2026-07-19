@@ -379,12 +379,12 @@ normConstructions forbidFused anns d = do
 -- @SCRUTINIZE@/@CONSTRUCT@ breakdown is printed.
 -- Returns the number of directives (0, 1 or 2) that reported a violation.
 reportInspected
-    :: DynFlags -> ReportMode -> Bool -> UNIQ_FM
+    :: DynFlags -> ReportMode -> Bool -> Bool -> UNIQ_FM
     -> INSPECT_PM_FM -> INSPECT_CONSTR_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
 reportInspected
-        dflags reportMode forbidFused anns pmAnns constrAnns allBinds
-        (NonRec b _)
+        dflags reportMode forbidFused inspectUnboxed anns pmAnns constrAnns
+        allBinds (NonRec b _)
     | subsumedBySameName allBinds b = return 0
     | otherwise = do
         n1 <- maybe (return 0)
@@ -401,8 +401,9 @@ reportInspected
         let isInteresting = niInteresting ni
             exclusion = niExclusion ni
             inPosition = niPosition ni
+        let heapFilter = if inspectUnboxed then id else keepHeapAllocatedOnly
         let allHits = filter (inPosition . snd)
-                    $ keepHeapAllocatedOnly
+                    $ heapFilter
                     $ concatMap
                         (\(v, e) ->
                             containsAnns dflags isInteresting (NonRec v e))
@@ -468,7 +469,7 @@ reportInspected
             uniqBinders patternMatches showDetailsScrutinize
         showInfo b dflags reportMode "CONSTRUCT"
             uniqConstr constrs showDetailsConstr
-reportInspected _ _ _ _ _ _ _ (Rec _) =
+reportInspected _ _ _ _ _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
 
 -------------------------------------------------------------------------------
@@ -828,6 +829,7 @@ fusionReport mesg reportMode runInspect opts guts = do
         n1 <- if runInspect
               then reportInspected
                        dflags reportMode (optionsForbidFused opts)
+                       (optionsInspectUnboxed opts)
                        anns pmAnns constrAnns allBinds bind
               else return 0
         n2 <- if runInspect

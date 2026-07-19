@@ -183,6 +183,7 @@ data Options = Options
     , optionsWError :: Bool
     , optionsCsvAppend :: Bool
     , optionsForbidFused :: Bool
+    , optionsInspectUnboxed :: Bool
     } deriving Show
 
 -- Checks whether a case alternative contains a type for which the given

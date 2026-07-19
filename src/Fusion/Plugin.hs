@@ -151,6 +151,16 @@ import Fusion.Plugin.Inspect
 -- ghc-options: -fplugin-opt=Fusion.Plugin:forbid-fused
 -- @
 --
+-- By default the inspection annotations ignore unboxed and other
+-- non-heap-allocated types (e.g. @Int#@, unboxed tuples, enumerations), since
+-- these never represent a boxing failure. GHC option to instead include them
+-- in the inspection: with this on, an unboxed type must be listed explicitly
+-- in a @Permit...@ annotation to be allowed, exactly like a boxed type:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:inspect-unboxed
+-- @
+--
 -- To dump the core after each core to core transformation, pass the
 -- following to your ghc-options:
 --
@@ -242,6 +252,7 @@ defaultOptions = Options
     , optionsWError = False
     , optionsCsvAppend = False
     , optionsForbidFused = False
+    , optionsInspectUnboxed = False
     }
 
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
@@ -281,6 +292,12 @@ setForbidFused val = do
     (args, opts) <- get
     put (args, opts { optionsForbidFused = val })
 
+setInspectUnboxed
+    :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setInspectUnboxed val = do
+    (args, opts) <- get
+    put (args, opts { optionsInspectUnboxed = val })
+
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
 setVerbosityLevel val = do
@@ -313,6 +330,7 @@ parseOptions args =
             "werror" -> setWError True
             "csv-append" -> setCsvAppend True
             "forbid-fused" -> setForbidFused True
+            "inspect-unboxed" -> setInspectUnboxed True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1

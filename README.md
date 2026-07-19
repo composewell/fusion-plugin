@@ -201,6 +201,21 @@ If any of the types in the permitted list is not actually found in the
 binding, a warning is emitted so that stale entries can be removed from
 the list.
 
+### Including Unboxed Types in the Inspection
+
+By default the inspection annotations ignore unboxed and other
+non-heap-allocated types (e.g. `Int#`, unboxed tuples, enumeration types like
+`Bool`), since these never represent a boxing failure. Pass the
+`inspect-unboxed` plugin option to include them in the inspection instead:
+
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:inspect-unboxed
+```
+
+With this option a `Forbid...` annotation reports unboxed occurrences too, and
+an unboxed type must be listed explicitly in a `Permit...` annotation to be
+allowed, exactly like a boxed type.
+
 ### Inspecting type class dictionaries
 
 To check the presence or absence of type classes in the Core of a binding,
