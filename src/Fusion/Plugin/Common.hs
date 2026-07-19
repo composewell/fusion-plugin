@@ -182,6 +182,7 @@ data Options = Options
     , optionsVerbosityLevel :: ReportMode
     , optionsWError :: Bool
     , optionsCsvAppend :: Bool
+    , optionsForbidFused :: Bool
     } deriving Show
 
 -- Checks whether a case alternative contains a type for which the given

@@ -141,6 +141,16 @@ import Fusion.Plugin.Inspect
 --
 -- Verbosity levels @2@, @3@, @4@ can be used for more verbose output.
 --
+-- GHC option to make every @Forbid...@ annotation
+-- ('Fusion.Plugin.Types.ForbidPatternMatches',
+-- 'Fusion.Plugin.Types.ForbidAllocations') additionally forbid all
+-- 'Fusion.Plugin.Types.Fuse' annotated types, using them as a baseline. The
+-- types named in the annotation are then forbidden on top of the fused types:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:forbid-fused
+-- @
+--
 -- To dump the core after each core to core transformation, pass the
 -- following to your ghc-options:
 --
@@ -230,6 +240,7 @@ defaultOptions = Options
     , optionsVerbosityLevel = ReportSilent
     , optionsWError = False
     , optionsCsvAppend = False
+    , optionsForbidFused = False
     }
 
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
@@ -264,6 +275,11 @@ setCsvAppend val = do
     (args, opts) <- get
     put (args, opts { optionsCsvAppend = val })
 
+setForbidFused :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setForbidFused val = do
+    (args, opts) <- get
+    put (args, opts { optionsForbidFused = val })
+
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
 setVerbosityLevel val = do
@@ -295,6 +311,7 @@ parseOptions args =
             "dump-core-if-violated" -> setDumpCoreIfViolated True
             "werror" -> setWError True
             "csv-append" -> setCsvAppend True
+            "forbid-fused" -> setForbidFused True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1

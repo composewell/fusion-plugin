@@ -251,6 +251,10 @@ keepHeapAllocatedOnly
     :: [([CoreBind], Context)] -> [([CoreBind], Context)]
 keepHeapAllocatedOnly = filter (isHeapAllocated . snd)
 
+forbidding :: Bool -> UNIQ_FM -> [Name] -> Name -> Bool
+forbidding forbidFused anns names n =
+    n `elem` names || (forbidFused && isJust (lookupUFM anns n))
+
 -- | Show a scrutinizing hit for the detailed report. A 'Left' is a scrutiny
 -- that matched a data constructor (delegated to 'showDetailsCaseMatch'); a
 -- 'Right' is a constructor-less scrutiny (a default-only\/literal @case@) whose
@@ -303,26 +307,17 @@ data NormInspect = NormInspect
 
 -- | Normalize an 'InspectPatternMatches' directive. All of its constructors
 -- act on the scrutinizing (pattern-match) position.
-normPatternMatches :: UNIQ_FM -> InspectPatternMatches -> CoreM NormInspect
-normPatternMatches anns d = do
+normPatternMatches
+    :: Bool -> UNIQ_FM -> InspectPatternMatches -> CoreM NormInspect
+normPatternMatches forbidFused anns d = do
     (interesting, excl, permit, banner) <- case d of
         ForbidPatternMatches thNames -> do
             names <- resolveTHNames thNames
             return
-                ( \n -> n `elem` names
+                ( forbidding forbidFused anns names
                 , []
                 , Nothing
                 , "ForbidPatternMatches " ++ show thNames
-                )
-        ForbidFusedPatternMatches thForbid thAllow -> do
-            forbidden <- resolveTHNames thForbid
-            allowed <- resolveTHNames thAllow
-            return
-                ( \n -> isJust (lookupUFM anns n) || n `elem` forbidden
-                , allowed
-                , Nothing
-                , "ForbidFusedPatternMatches "
-                    ++ show thForbid ++ " " ++ show thAllow
                 )
         PermitPatternMatches thAllow -> do
             allowed <- resolveTHNames thAllow
@@ -343,26 +338,16 @@ normPatternMatches anns d = do
 
 -- | Normalize an 'InspectAllocations' directive. All of its constructors act
 -- on the constructing (allocating) position.
-normAllocations :: UNIQ_FM -> InspectAllocations -> CoreM NormInspect
-normAllocations anns d = do
+normAllocations :: Bool -> UNIQ_FM -> InspectAllocations -> CoreM NormInspect
+normAllocations forbidFused anns d = do
     (interesting, excl, permit, banner) <- case d of
         ForbidAllocations thNames -> do
             names <- resolveTHNames thNames
             return
-                ( \n -> n `elem` names
+                ( forbidding forbidFused anns names
                 , []
                 , Nothing
                 , "ForbidAllocations " ++ show thNames
-                )
-        ForbidFusedAllocations thForbid thAllow -> do
-            forbidden <- resolveTHNames thForbid
-            allowed <- resolveTHNames thAllow
-            return
-                ( \n -> isJust (lookupUFM anns n) || n `elem` forbidden
-                , allowed
-                , Nothing
-                , "ForbidFusedAllocations "
-                    ++ show thForbid ++ " " ++ show thAllow
                 )
         PermitAllocations thAllow -> do
             allowed <- resolveTHNames thAllow
@@ -393,16 +378,18 @@ normAllocations anns d = do
 -- @SCRUTINIZE@/@CONSTRUCT@ breakdown is printed.
 -- Returns the number of directives (0, 1 or 2) that reported a violation.
 reportInspected
-    :: DynFlags -> ReportMode -> UNIQ_FM -> INSPECT_PM_FM -> INSPECT_ALLOC_FM
+    :: DynFlags -> ReportMode -> Bool -> UNIQ_FM
+    -> INSPECT_PM_FM -> INSPECT_ALLOC_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
-reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
+reportInspected
+        dflags reportMode forbidFused anns pmAnns allocAnns allBinds (NonRec b _)
     | subsumedBySameName allBinds b = return 0
     | otherwise = do
         n1 <- maybe (return 0)
-                (\d -> normPatternMatches anns d >>= go)
+                (\d -> normPatternMatches forbidFused anns d >>= go)
                 (lookupBinderAnn b pmAnns)
         n2 <- maybe (return 0)
-                (\d -> normAllocations anns d >>= go)
+                (\d -> normAllocations forbidFused anns d >>= go)
                 (lookupBinderAnn b allocAnns)
         return (n1 + n2)
 
@@ -479,7 +466,7 @@ reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
             uniqBinders patternMatches showDetailsScrutinize
         showInfo b dflags reportMode "CONSTRUCT"
             uniqConstr constrs showDetailsConstr
-reportInspected _ _ _ _ _ _ (Rec _) =
+reportInspected _ _ _ _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
 
 -------------------------------------------------------------------------------
@@ -838,7 +825,8 @@ fusionReport mesg reportMode runInspect opts guts = do
             dumpAnns  = iaDumps iAnns
         n1 <- if runInspect
               then reportInspected
-                       dflags reportMode anns pmAnns allocAnns allBinds bind
+                       dflags reportMode (optionsForbidFused opts)
+                       anns pmAnns allocAnns allBinds bind
               else return 0
         n2 <- if runInspect
               then reportInspectedClasses

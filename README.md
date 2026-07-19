@@ -141,36 +141,23 @@ each has an analogous `...PatternMatches` counterpart.
 import Fusion.Plugin.Types (InspectAllocations(..), InspectPatternMatches(..))
 ```
 
-### Using `Fuse` Annotated as Baseline
-
-Complain if any `Fuse` annotated type is allocated in the function.
-```haskell
-{-# ANN function (ForbidFusedAllocations [] []) #-}
-function1 :: ...
-```
-
-Also forbid `Maybe` as well even though it isn't Fuse-annotated.
-```haskell
-{-# ANN function (ForbidFusedAllocations [''Maybe] []) #-}
-function1a :: ...
-```
-
-Disallow `Maybe`, but explicitly allow `Step` even though it is Fuse-annotated
-we allow it to be present in this binding.
-```haskell
-{-# ANN function (ForbidFusedAllocations [''Maybe] [''Step]) #-}
-function1b :: ...
-```
-
 ### Forbidding Only Selected Types
 
-Disallow the specified types and allow the rest, irrespective of `Fuse`
-annotation. To check both allocations and pattern matches, attach one
+Disallow only the specified types and allow the rest, irrespective of the
+`Fuse` annotation. To check both allocations and pattern matches, attach one
 annotation of each type to the binding.
 ```haskell
 {-# ANN function (ForbidAllocations [''Step]) #-}
 {-# ANN function (ForbidPatternMatches [''Step]) #-}
 function2 :: ...
+```
+
+Additionally pass the `forbid-fused` plugin option to forbid all `Fuse`
+annotated types too, using them as a baseline; the types named in the
+annotation are then forbidden on top of them. With this option
+`ForbidAllocations []` forbids exactly the `Fuse` annotated types.
+```
+ghc-options: -fplugin-opt=Fusion.Plugin:forbid-fused
 ```
 
 Report the listed types only where they are allocated:
