@@ -299,8 +299,6 @@ data NormInspect = NormInspect
     -- ^ Label used in the terse "found ..." report line.
     , niBanner      :: String
     -- ^ The directive rendered for the detailed report banner.
-    , niHeapFilter  :: Bool
-    -- ^ Whether to drop non-heap-allocated hits in allocation matches.
     }
 
 -- | Normalize an 'InspectPatternMatches' directive. All of its constructors
@@ -341,7 +339,6 @@ normPatternMatches anns d = do
         , niPermit = permit
         , niForbidLabel = "forbidden pattern matches"
         , niBanner = banner
-        , niHeapFilter = False
         }
 
 -- | Normalize an 'InspectAllocations' directive. All of its constructors act
@@ -382,7 +379,6 @@ normAllocations anns d = do
         , niPermit = permit
         , niForbidLabel = "forbidden allocations"
         , niBanner = banner
-        , niHeapFilter = True
         }
 
 -- | If the given top level bind's own binder carries an 'InspectPatternMatches'
@@ -416,11 +412,8 @@ reportInspected dflags reportMode anns pmAnns allocAnns allBinds (NonRec b _)
         let isInteresting = niInteresting ni
             exclusion = niExclusion ni
             inPosition = niPosition ni
-            heapFilter = if niHeapFilter ni
-                         then keepHeapAllocatedOnly
-                         else id
         let allHits = filter (inPosition . snd)
-                    $ heapFilter
+                    $ keepHeapAllocatedOnly
                     $ concatMap
                         (\(v, e) ->
                             containsAnns dflags isInteresting (NonRec v e))
