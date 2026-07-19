@@ -101,7 +101,31 @@ containsAnns dflags isInteresting bind =
     -- The first argument is current binder and its parent chain. We add a new
     -- element to this path when we enter a let statement.
     goLet [] bind
-  where
+
+    where
+
+    -- A data-constructor 'Id' of an interesting type is a construction hit,
+    -- whether applied to its fields (head of an 'App' spine, e.g. `Yield x y`)
+    -- or nullary (a bare 'Var', e.g. `Nothing`, `[]`). An ordinary variable is
+    -- not: even at a boxed type like `Int` it only references a value boxed
+    -- elsewhere, so it allocates nothing.
+    dataConHit :: [CoreBind] -> Id -> [([CoreBind], Context)]
+    dataConHit parents i
+        | Just dcon <- isDataConId_maybe i
+        , isInteresting (getName (dataConTyCon dcon)) = [(parents, Constr i)]
+        | otherwise = []
+
+    -- Like 'dataConHit' but keyed on a binder's /type/ rather than a data
+    -- constructor: a scrutiny hit when the case binder's type is an
+    -- interesting TyCon. Used for a default-only (or literal) case, which
+    -- matches no data constructor, so the type must come from the scrutinee.
+    scrutHit :: [CoreBind] -> CoreBndr -> [([CoreBind], Context)]
+    scrutHit parents bndr =
+        case tyConAppTyConPicky_maybe (varType bndr) of
+            Just tycon | isInteresting (getName tycon) ->
+                [(parents, CaseScrut bndr)]
+            _ -> []
+
     go :: [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
 
     -- Match and record the case alternative if it contains a constructor
@@ -112,50 +136,27 @@ containsAnns dflags isInteresting bind =
             hit =
                 case altsContainsAnn dflags isInteresting alts of
                     Just x -> [(parents, CaseAlt x)]
-                    Nothing ->
-                        -- 'altsContainsAnn' recognizes an interesting type
-                        -- only through a matched data constructor. A
-                        -- default-only (or literal) case has none, so fall
-                        -- back to the scrutinee's type (the case binder's
-                        -- type) -- otherwise e.g. `case s of _ -> ...` with `s
-                        -- :: SPEC` would go unreported.
-                        case tyConAppTyConPicky_maybe (varType caseBndr) of
-                            Just tycon | isInteresting (getName tycon) ->
-                                [(parents, CaseScrut caseBndr)]
-                            _ -> []
+                    -- 'altsContainsAnn' recognizes an interesting type only
+                    -- through a matched data constructor. A default-only (or
+                    -- literal) case has none, so fall back to the scrutinee's
+                    -- type -- otherwise e.g. `case s of _ -> ...` with `s ::
+                    -- SPEC` would go unreported.
+                    Nothing -> scrutHit parents caseBndr
         in hit ++ binders
 
-    -- Enter a new let binding inside the current expression and traverse the
-    -- let expression as well.
-    go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
-
-    -- If the head of the application spine is a data constructor, record a hit
-    -- for its type -- this recognizes a constructor applied to its fields
-    -- (e.g. `Yield x y`), which checking a bare 'Var' node's own type cannot:
-    -- the unapplied constructor 'Id' has a function type, not the constructed
-    -- type, so that check only fires for nullary constructors.
     go parents e@(App _ _) =
         let (fun, args) = collectArgs e
             hit = case fun of
-                Var i
-                    | Just dcon <- isDataConId_maybe i
-                    , isInteresting (getName (dataConTyCon dcon)) ->
-                        [(parents, Constr i)]
+                Var i -> dataConHit parents i
                 _ -> []
         in hit ++ go parents fun ++ concatMap (go parents) args
+
+    go parents (Var i) = dataConHit parents i
+
+    -- Recursive traversal
+    go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
-
-    -- A bare 'Var' is an allocation only when it is a nullary data
-    -- constructor (e.g. @Nothing@, @[]@); an ordinary variable reference of a
-    -- boxed type (e.g. an @Int@-typed argument) allocates nothing -- the box
-    -- was built elsewhere. Guarding on 'isDataConId_maybe' (as the 'App'
-    -- branch does) avoids reporting such references as constructions.
-    go parents (Var i)
-        | Just dcon <- isDataConId_maybe i
-        , isInteresting (getName (dataConTyCon dcon)) =
-            [(parents, Constr i)]
-        | otherwise = []
 
     -- There are no let bindings in these.
     go _ (Lit _) = []
