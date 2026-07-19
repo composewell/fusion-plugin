@@ -124,7 +124,7 @@ function :: ...
 ### Inspecting Boxed Types within a Function
 
 To verify elimination of certain types within a function annotate
-the function with `InspectAllocations` (types constructed/allocated)
+the function with `InspectConstructions` (types constructed/allocated)
 and/or `InspectPatternMatches` (types scrutinized in a `case`). If
 a violation is found the plugin will complain providing details of the
 violation. When the `werror` plugin option is used it will fail the
@@ -132,22 +132,22 @@ compilation on violation.
 
 The two annotation types are independent, so a single binding may carry
 one of each to inspect both the constructing and the scrutinizing
-position at once. All the examples below use the allocation variant;
+position at once. All the examples below use the construction variant;
 each has an analogous `...PatternMatches` counterpart.
 
 ```haskell
 {-# LANGUAGE TemplateHaskellQuotes #-}
 
-import Fusion.Plugin.Types (InspectAllocations(..), InspectPatternMatches(..))
+import Fusion.Plugin.Types (InspectConstructions(..), InspectPatternMatches(..))
 ```
 
 ### Forbidding Only Selected Types
 
 Disallow only the specified types and allow the rest, irrespective of the
-`Fuse` annotation. To check both allocations and pattern matches, attach one
+`Fuse` annotation. To check both constructions and pattern matches, attach one
 annotation of each type to the binding.
 ```haskell
-{-# ANN function (ForbidAllocations [''Step]) #-}
+{-# ANN function (ForbidConstructions [''Step]) #-}
 {-# ANN function (ForbidPatternMatches [''Step]) #-}
 function2 :: ...
 ```
@@ -155,14 +155,14 @@ function2 :: ...
 Additionally pass the `forbid-fused` plugin option to forbid all `Fuse`
 annotated types too, using them as a baseline; the types named in the
 annotation are then forbidden on top of them. With this option
-`ForbidAllocations []` forbids exactly the `Fuse` annotated types.
+`ForbidConstructions []` forbids exactly the `Fuse` annotated types.
 ```
 ghc-options: -fplugin-opt=Fusion.Plugin:forbid-fused
 ```
 
-Report the listed types only where they are allocated:
+Report the listed types only where they are constructed:
 ```haskell
-{-# ANN function (ForbidAllocations [''Step]) #-}
+{-# ANN function (ForbidConstructions [''Step]) #-}
 ```
 
 Report the listed types only where they are pattern-matched:
@@ -173,23 +173,23 @@ Report the listed types only where they are pattern-matched:
 ### Permitting Only Selected Types
 
 Allow only the specified types and disallow all others. To check both
-allocations and pattern matches, attach one annotation of each type to the
+constructions and pattern matches, attach one annotation of each type to the
 binding.
 ```haskell
-{-# ANN function (PermitAllocations [''Int, ''IO]) #-}
+{-# ANN function (PermitConstructions [''Int, ''IO]) #-}
 {-# ANN function (PermitPatternMatches [''Int, ''IO]) #-}
 function3 :: ...
 ```
 
-To report every allocated type used within a function:
+To report every constructed type used within a function:
 ```haskell
-{-# ANN function (PermitAllocations []) #-}
+{-# ANN function (PermitConstructions []) #-}
 function4 :: ...
 ```
 
-Report every allocated type except the listed ones:
+Report every constructed type except the listed ones:
 ```haskell
-{-# ANN function (PermitAllocations [''Int, ''IO]) #-}
+{-# ANN function (PermitConstructions [''Int, ''IO]) #-}
 ```
 
 Report every pattern-matched type except the listed ones:
@@ -289,7 +289,7 @@ violation.
 ### Detecting code bloat
 
 To record the core size of every binding that carries a violation-causing
-annotation (`InspectPatternMatches`, `InspectAllocations`, `InspectTypeClasses`
+annotation (`InspectPatternMatches`, `InspectConstructions`, `InspectTypeClasses`
 or `MaxCoreSize`) to a file, pass the `dump-core-sizes` option:
 ```
 ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
@@ -328,7 +328,7 @@ otherwise.  Each pass adds a `<NN-pass-name>.dump-simpl` suffix, e.g.
 
 `dump-core-if-annotated` option dumps the core of every binding
 that carries a violation-causing annotation (`InspectPatternMatches`,
-`InspectAllocations`, `InspectTypeClasses` or `MaxCoreSize`), without adding a
+`InspectConstructions`, `InspectTypeClasses` or `MaxCoreSize`), without adding a
 `DumpCore` annotation to each one:
 ```
 ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-if-annotated

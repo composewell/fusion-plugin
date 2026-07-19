@@ -6,4 +6,4 @@ package fusion-plugin
 source-repository-package
   type: git
   location: https://github.com/composewell/fusion-plugin-types.git
-  tag: 1f21d07917b62e1b9a5327f930bd31168441d505
+  tag: 5a7d049b69437dc8d505931820cbdd8ab56193fa

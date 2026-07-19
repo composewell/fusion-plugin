@@ -143,7 +143,7 @@ import Fusion.Plugin.Inspect
 --
 -- GHC option to make every @Forbid...@ annotation
 -- ('Fusion.Plugin.Types.ForbidPatternMatches',
--- 'Fusion.Plugin.Types.ForbidAllocations') additionally forbid all
+-- 'Fusion.Plugin.Types.ForbidConstructions') additionally forbid all
 -- 'Fusion.Plugin.Types.Fuse' annotated types, using them as a baseline. The
 -- types named in the annotation are then forbidden on top of the fused types:
 --
@@ -162,8 +162,9 @@ import Fusion.Plugin.Inspect
 -- Note: @dump-core@ does not work for GHC-9.0.x.
 --
 -- To record the optimized core size of every binding that carries a
--- violation-causing annotation ('InspectPatternMatches', 'InspectAllocations',
--- 'InspectTypeClasses' or 'MaxCoreSize') to a CSV file, pass the following:
+-- violation-causing annotation ('InspectPatternMatches',
+-- 'InspectConstructions', 'InspectTypeClasses' or 'MaxCoreSize') to a CSV
+-- file, pass the following:
 --
 -- @
 -- ghc-options: -fplugin-opt=Fusion.Plugin:dump-core-sizes
@@ -185,7 +186,7 @@ import Fusion.Plugin.Inspect
 -- @
 --
 -- To dump the Core of every binding that carries a violation-causing
--- annotation ('InspectPatternMatches', 'InspectAllocations',
+-- annotation ('InspectPatternMatches', 'InspectConstructions',
 -- 'InspectTypeClasses' or 'MaxCoreSize'), pass the following:
 --
 -- @
