@@ -195,7 +195,7 @@ filterExcluded excl =
 
 -- | True when the type occurs in a scrutinizing (pattern-match, i.e. @case@)
 -- position -- a value being deconstructed. Note this is a /use/ of the value,
--- not an allocation: the box was allocated elsewhere (see 'isHeapAllocated').
+-- not an allocation: the box was allocated elsewhere (see 'isBoxedHit').
 isPatternMatch :: Context -> Bool
 isPatternMatch (CaseAlt _)   = True
 isPatternMatch (CaseScrut _) = True
@@ -208,31 +208,33 @@ isConstruction (Constr _)    = True
 isConstruction (CaseAlt _)   = False
 isConstruction (CaseScrut _) = False
 
--- | True for TyCons whose values GHC never heap-allocates: unboxed
--- primitives (e.g. 'Int#', 'State#'), unboxed tuples/sums, and true
--- enumeration types (every data constructor nullary, e.g. '()', 'Bool')
--- which are compiled as statically shared singletons.
-isNotHeapAllocatedTyCon :: TyCon -> Bool
-isNotHeapAllocatedTyCon tycon =
+-- | True for unboxed TyCons: unboxed primitives (e.g. 'Int#', 'State#'),
+-- unboxed tuples and unboxed sums.
+--
+-- Note enumeration types (e.g. '()', 'Bool', 'SPEC') are /not/ included here.
+-- Even though GHC allocates their values as global staic closures rather than
+-- on the heap, they are still boxed -- deconstructing or using one goes
+-- through a pointer indirection.
+isUnboxedTyCon :: TyCon -> Bool
+isUnboxedTyCon tycon =
     isPrimTyCon tycon
     || isUnboxedTupleTyCon tycon
     || isUnboxedSumTyCon tycon
-    || isEnumerationTyCon tycon
 
--- | False for the cases that can never represent boxing: a case match or
--- construction of a non-allocating type (see 'isNotHeapAllocatedTyCon'), or a
--- bare reference to something of function type (e.g. a primop like \"+#\", or
--- a specialized worker) which is not a data construction at all.
+-- | False for hits that can never represent boxing: a case match or
+-- construction of an unboxed type (see 'isUnboxedTyCon'), or a bare reference
+-- to something of function type (e.g. a primop like \"+#\", or a specialized
+-- worker) which is not a data construction at all.
 --
 -- This covers all usage including case scrutiny as well as construction.
-isHeapAllocated :: Context -> Bool
-isHeapAllocated (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
-    not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
-isHeapAllocated (CaseAlt _) = True
-isHeapAllocated (CaseScrut bndr) =
-    maybe True (not . isNotHeapAllocatedTyCon)
+isBoxedHit :: Context -> Bool
+isBoxedHit (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+    not (isUnboxedTyCon (dataConTyCon dcon))
+isBoxedHit (CaseAlt _) = True
+isBoxedHit (CaseScrut bndr) =
+    maybe True (not . isUnboxedTyCon)
         (tyConAppTyConPicky_maybe (varType bndr))
-isHeapAllocated (Constr con) =
+isBoxedHit (Constr con) =
     case isDataConId_maybe con of
         -- A genuine data-constructor 'Id' is never itself the "bare
         -- reference to something of function type" this guards against
@@ -240,16 +242,16 @@ isHeapAllocated (Constr con) =
         -- exclusion below does not apply here -- it would wrongly drop
         -- every non-nullary constructor (e.g. @(:)@), whose own type is a
         -- function over its fields.
-        Just dcon -> not (isNotHeapAllocatedTyCon (dataConTyCon dcon))
+        Just dcon -> not (isUnboxedTyCon (dataConTyCon dcon))
         Nothing ->
             not (isFunTy (varType con))
-            && maybe True (not . isNotHeapAllocatedTyCon)
+            && maybe True (not . isUnboxedTyCon)
                      (tyConAppTyConPicky_maybe (varType con))
 
--- | Drop the cases that can never represent boxing (see 'isHeapAllocated').
-keepHeapAllocatedOnly
+-- | Drop the hits that can never represent boxing (see 'isBoxedHit').
+keepBoxedOnly
     :: [([CoreBind], Context)] -> [([CoreBind], Context)]
-keepHeapAllocatedOnly = filter (isHeapAllocated . snd)
+keepBoxedOnly = filter (isBoxedHit . snd)
 
 forbidding :: Bool -> UNIQ_FM -> [Name] -> Name -> Bool
 forbidding forbidFused anns names n =
@@ -294,6 +296,9 @@ data NormInspect = NormInspect
     -- about.
     , niExclusion   :: [Name]
     -- ^ Names to exclude from the reported hits (the allow list).
+    , niExplicit    :: [Name]
+    -- ^ Types the directive names explicitly (the forbid list for a "forbid"
+    -- directive, the allow list for a "permit" one).
     , niPosition    :: Context -> Bool
     -- ^ Position filter: keep only scrutinizing or only constructing hits.
     , niPermit      :: Maybe (String, [TH.Name])
@@ -310,12 +315,13 @@ data NormInspect = NormInspect
 normPatternMatches
     :: Bool -> UNIQ_FM -> InspectPatternMatches -> CoreM NormInspect
 normPatternMatches forbidFused anns d = do
-    (interesting, excl, permit, banner) <- case d of
+    (interesting, excl, explicit, permit, banner) <- case d of
         ForbidPatternMatches thNames -> do
             names <- resolveTHNames thNames
             return
                 ( forbidding forbidFused anns names
                 , []
+                , names
                 , Nothing
                 , "ForbidPatternMatches " ++ show thNames
                 )
@@ -324,12 +330,14 @@ normPatternMatches forbidFused anns d = do
             return
                 ( const True
                 , allowed
+                , allowed
                 , Just ("PermitPatternMatches", thAllow)
                 , "PermitPatternMatches " ++ show thAllow
                 )
     return NormInspect
         { niInteresting = interesting
         , niExclusion = excl
+        , niExplicit = explicit
         , niPosition = isPatternMatch
         , niPermit = permit
         , niForbidLabel = "forbidden pattern matches"
@@ -341,12 +349,13 @@ normPatternMatches forbidFused anns d = do
 normConstructions
     :: Bool -> UNIQ_FM -> InspectConstructions -> CoreM NormInspect
 normConstructions forbidFused anns d = do
-    (interesting, excl, permit, banner) <- case d of
+    (interesting, excl, explicit, permit, banner) <- case d of
         ForbidConstructions thNames -> do
             names <- resolveTHNames thNames
             return
                 ( forbidding forbidFused anns names
                 , []
+                , names
                 , Nothing
                 , "ForbidConstructions " ++ show thNames
                 )
@@ -355,12 +364,14 @@ normConstructions forbidFused anns d = do
             return
                 ( const True
                 , allowed
+                , allowed
                 , Just ("PermitConstructions", thAllow)
                 , "PermitConstructions " ++ show thAllow
                 )
     return NormInspect
         { niInteresting = interesting
         , niExclusion = excl
+        , niExplicit = explicit
         , niPosition = isConstruction
         , niPermit = permit
         , niForbidLabel = "forbidden constructions"
@@ -400,10 +411,14 @@ reportInspected
     go ni = do
         let isInteresting = niInteresting ni
             exclusion = niExclusion ni
+            explicit = niExplicit ni
             inPosition = niPosition ni
-        let heapFilter = if inspectUnboxed then id else keepHeapAllocatedOnly
+            keep (_, ctx) =
+                   inspectUnboxed
+                || isBoxedHit ctx
+                || maybe False (`elem` explicit) (contextTyConName ctx)
         let allHits = filter (inPosition . snd)
-                    $ heapFilter
+                    $ filter keep
                     $ concatMap
                         (\(v, e) ->
                             containsAnns dflags isInteresting (NonRec v e))
@@ -857,7 +872,7 @@ fusionReport mesg reportMode runInspect opts guts = do
         when (shouldDump && notSubsumed) $
             dumpBindCore dflags pkgName modName allBinds b
         when (b `elemVarSet` liveBndrs) $ do
-            let results = keepHeapAllocatedOnly
+            let results = keepBoxedOnly
                         $ containsAnns dflags (isJust . lookupUFM anns) bind
 
             let getAlts x =

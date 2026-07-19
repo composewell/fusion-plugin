@@ -143,19 +143,18 @@ import Fusion.Plugin.Inspect
 --
 -- GHC option to make every @Forbid...@ annotation
 -- ('Fusion.Plugin.Types.ForbidPatternMatches',
--- 'Fusion.Plugin.Types.ForbidConstructions') additionally forbid all
--- 'Fusion.Plugin.Types.Fuse' annotated types, using them as a baseline. The
--- types named in the annotation are then forbidden on top of the fused types:
+-- 'Fusion.Plugin.Types.ForbidConstructions') to implicitly forbid all
+-- 'Fusion.Plugin.Types.Fuse' annotated types.
+-- This does not affect the @Permit...@ annotations:
 --
 -- @
 -- ghc-options: -fplugin-opt=Fusion.Plugin:forbid-fused
 -- @
 --
--- By default the inspection annotations ignore unboxed and other
--- non-heap-allocated types (e.g. @Int#@, unboxed tuples, enumerations), since
--- these never represent a boxing failure. GHC option to instead include them
--- in the inspection: with this on, an unboxed type must be listed explicitly
--- in a @Permit...@ annotation to be allowed, exactly like a boxed type:
+-- By default unboxed types (e.g. @Int#@, unboxed tuples and sums) are
+-- implicitly in the permitted list. When `inspect-fused` plugin option is
+-- enabled they are no longer implicitly permitted, they will now have to be
+-- explictly mentioned in the permitted list to allow them.
 --
 -- @
 -- ghc-options: -fplugin-opt=Fusion.Plugin:inspect-unboxed

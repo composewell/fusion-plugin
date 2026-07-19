@@ -141,6 +141,18 @@ each has an analogous `...PatternMatches` counterpart.
 import Fusion.Plugin.Types (InspectConstructions(..), InspectPatternMatches(..))
 ```
 
+The whole system reduces to four simple rules:
+
+* A type explicitly listed in a `Forbid...` annotation is **always reported**
+  (forbidden).
+* A type explicitly listed in a `Permit...` annotation is **always allowed**
+  (permitted), never reported.
+* The `forbid-fused` plugin option **adds all `Fuse` annotated types to the
+  forbidden set**.
+* By default unboxed types are implicitly in the permitted list. The
+  `inspect-unboxed` plugin option means **unboxed types are no longer
+  implicitly permitted**.
+
 ### Forbidding Only Selected Types
 
 Disallow only the specified types and allow the rest, irrespective of the
@@ -203,18 +215,16 @@ the list.
 
 ### Including Unboxed Types in the Inspection
 
-By default the inspection annotations ignore unboxed and other
-non-heap-allocated types (e.g. `Int#`, unboxed tuples, enumeration types like
-`Bool`), since these never represent a boxing failure. Pass the
-`inspect-unboxed` plugin option to include them in the inspection instead:
+By default unboxed types (e.g. `Int#`, unboxed tuples and sums) are
+implicitly considered in the `Permit...` list.
+
+When `inspect-unboxed` plugin option is used, unboxed types are no longer
+implicitly permitted, you will have to mention them explicitly in the permitted
+list to allow them, forbidden list is not affected by this option.
 
 ```
 ghc-options: -fplugin-opt=Fusion.Plugin:inspect-unboxed
 ```
-
-With this option a `Forbid...` annotation reports unboxed occurrences too, and
-an unboxed type must be listed explicitly in a `Permit...` annotation to be
-allowed, exactly like a boxed type.
 
 ### Inspecting type class dictionaries
 
