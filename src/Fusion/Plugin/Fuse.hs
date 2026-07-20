@@ -38,6 +38,7 @@ import Fusion.Plugin.Types
 import Fusion.Plugin.Common
     ( ReportMode(..)
     , altsContainsAnn
+    , binderDisplayName
     , dbgLevel
     , debug
     , dumpBindCore
@@ -442,7 +443,7 @@ markInline pass reportMode transform guts = do
                 let tycons = DL.nub
                         [ qualifiedTyConName tc
                         | (ps, tc) <- blocked, getNonRecBinder (head ps) == bb ]
-                putMsgS $ "fusion-plugin: " ++ showWithUnique dflags bb
+                putMsgS $ "fusion-plugin: " ++ binderDisplayName bb
                         ++ ": NOINLINE pragma blocks fusion ("
                         ++ DL.intercalate ", " tycons ++ ")"
                 dumpBindCore dflags pkgName modName modBinds bb)
