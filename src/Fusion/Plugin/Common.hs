@@ -536,7 +536,7 @@ dumpBindCore
 dumpBindCore dflags pkgName modName allBinds b = do
     path <- writeBindCore dflags pkgName modName ".dump-simpl" allBinds b
     putMsgS $ "fusion-plugin: "
-            ++ showWithUnique dflags b ++ ": dumped core to " ++ path
+            ++ binderDisplayName b ++ ": dumped core to " ++ path
 
 -------------------------------------------------------------------------------
 -- Report unfused constructors

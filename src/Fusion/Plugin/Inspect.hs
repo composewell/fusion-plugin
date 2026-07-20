@@ -61,7 +61,6 @@ import Fusion.Plugin.Common
     , showDetailsCaseMatch
     , showDetailsConstr
     , showInfo
-    , showWithUnique
     , subsumedBySameName
     )
 
@@ -448,7 +447,7 @@ reportInspected
                     stale = filter (`notElem` present) allowed
                 unless (null stale) $
                     putMsgS $ "fusion-plugin: "
-                            ++ getOccString (getName b)
+                            ++ binderDisplayName b
                             ++ ": redundant " ++ label
                             ++ " entries (safe to remove): ["
                             ++ DL.intercalate ", " (map qualifiedName stale)
@@ -457,13 +456,13 @@ reportInspected
     terse ni results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
         in putMsgS $ "fusion-plugin: "
-                   ++ getOccString (getName b)
+                   ++ binderDisplayName b
                    ++ ": found " ++ niForbidLabel ni ++ " ["
                    ++ DL.intercalate ", " names ++ "]"
 
     detailed ni results = do
         putMsgS $ "fusion-plugin: "
-                ++ showWithUnique dflags b
+                ++ binderDisplayName b
                 ++ ": inspecting (" ++ niBanner ni ++ ")..."
         let getAlts x =
                 case x of
@@ -572,7 +571,7 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
                 ReportWarn -> report ispec hits
                 _ -> do
                     putMsgS $ "fusion-plugin: "
-                            ++ showWithUnique dflags b
+                            ++ binderDisplayName b
                             ++ ": inspecting (" ++ showSDoc dflags (ppr ispec) ++ ")..."
                     report ispec hits
             return 1
@@ -580,7 +579,7 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
     report _ hits =
         let names = DL.nub (map qualifiedTyConName hits)
         in putMsgS $ "fusion-plugin: "
-                   ++ getOccString (getName b)
+                   ++ binderDisplayName b
                    ++ ": found forbidden type classes ["
                    ++ DL.intercalate ", " names ++ "]"
 
@@ -592,7 +591,7 @@ reportInspectedClasses dflags reportMode classAnns allBinds (NonRec b _) =
             stale = filter (`notElem` present) allowed
         unless (null stale) $
             putMsgS $ "fusion-plugin: "
-                    ++ getOccString (getName b)
+                    ++ binderDisplayName b
                     ++ ": redundant PermitTypeClasses entries (safe to remove): ["
                     ++ DL.intercalate ", " (map qualifiedName stale) ++ "]"
     warnStalePermitted _ _ = return ()
@@ -629,9 +628,9 @@ dumpCoreSize dflags pkgName modName allBinds b = liftIO $ do
 
 -- Returns 0 on no violations and 1 otherwise.
 reportCoreSize
-    :: DynFlags -> ReportMode -> MAX_CORE_SIZE_FM
+    :: ReportMode -> MAX_CORE_SIZE_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
-reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
+reportCoreSize reportMode sizeAnns allBinds (NonRec b _) =
     case lookupBinderAnn b sizeAnns of
         Just ann | not (subsumedBySameName allBinds b) -> go ann
         _ -> return 0
@@ -647,7 +646,7 @@ reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
             ReportWarn -> return ()
             _ ->
                 putMsgS $ "fusion-plugin: "
-                        ++ showWithUnique dflags b
+                        ++ binderDisplayName b
                         ++ ": core size "
                         ++ show terms
                         ++ " terms (set of " ++ show (length clSet)
@@ -655,13 +654,13 @@ reportCoreSize dflags reportMode sizeAnns allBinds (NonRec b _) =
         if terms > maxSize
         then do
             putMsgS $ "fusion-plugin: "
-                    ++ showWithUnique dflags b
+                    ++ binderDisplayName b
                     ++ ": core size (" ++ show terms
                     ++ " terms) exceeds the specified size ("
                     ++ show maxSize ++ " terms)."
             return 1
         else return 0
-reportCoreSize _ _ _ _ (Rec _) =
+reportCoreSize _ _ _ (Rec _) =
     error "reportCoreSize: expecting only NonRec binders"
 
 -------------------------------------------------------------------------------
@@ -853,7 +852,7 @@ fusionReport mesg reportMode runInspect opts guts = do
                        dflags reportMode classAnns allBinds bind
               else return 0
         n3 <- if runInspect
-              then reportCoreSize dflags reportMode sizeAnns allBinds bind
+              then reportCoreSize reportMode sizeAnns allBinds bind
               else return 0
         let hasViolationAnn =
                    isJust (lookupBinderAnn b pmAnns)
