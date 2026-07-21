@@ -87,8 +87,10 @@ import Fusion.Plugin.Common
 -- 3. 'Constr' is a construction or bare boxed use.
 data Context = CaseAlt (Alt CoreBndr) | CaseScrut CoreBndr | Constr Id
 
--- letBndrsThatAreCases restricts itself to only case matches right on
--- entry to a let. This one looks for case matches anywhere.
+-- Inspection detects everything detectable: it looks for interesting types
+-- everywhere in a binding, in every subexpression including case scrutinees.
+-- (Force-inlining is deliberately narrower; those choices are documented in
+-- Fusion.Plugin.Fuse)
 --
 -- | Report whether data constructors of interest are case matched or returned
 -- anywhere in the binders, not just case match on entry or construction on
@@ -128,10 +130,16 @@ containsAnns dflags isInteresting bind =
     go :: [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
 
     -- Match and record the case alternative if it contains a constructor
-    -- annotated with "Fuse" and traverse the Alt expressions to discover more
-    -- let bindings.
-    go parents (Case _ caseBndr _ alts) =
-        let binders = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
+    -- annotated with "Fuse", and traverse both the scrutinee and the Alt
+    -- expressions to discover more hits and let bindings. Traversing the
+    -- scrutinee ('scrut') matters for matches buried there -- e.g. a stream
+    -- stepper lambda passed to an un-inlined imported combinator (such as
+    -- 'foldBreak'), which lands in the scrutinee of the outer result-unpacking
+    -- @case (# _, _ #)@.
+    go parents (Case scrut caseBndr _ alts) =
+        let binders =
+                   go parents scrut
+                ++ (alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1))
             hit =
                 case altsContainsAnn dflags isInteresting alts of
                     Just x -> [(parents, CaseAlt x)]
