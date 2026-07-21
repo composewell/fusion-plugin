@@ -389,6 +389,46 @@ normConstructions forbidFused anns d = do
         , niBanner = banner
         }
 
+-- | Collect the fusible ('Fuse'-annotated) 'TyCon's that occur as the type of
+-- a bare 'Var' /reference/ -- not a data constructor -- anywhere in the Core
+-- of an expression. These are consumers of a fusible value: force-inlining
+-- deliberately targets the enclosing binder so that case-of-case can eliminate
+-- the value (see 'constructingBinders' item 5 in Fusion.Plugin.Fuse). A bare
+-- Var reference is not an allocation, so 'containsAnns' does not record it as
+-- a 'Constr' hit and it is not verified through 'PermitConstructions'; it is
+-- only reported as an advisory note (see 'warnConsumedFusible'). Actual
+-- constructors (nullary or applied) are excluded here -- those are already
+-- reported as constructions.
+--
+consumedFusibleTyCons :: UNIQ_FM -> CoreExpr -> [TyCon]
+consumedFusibleTyCons fuseAnns e0 =
+    nonDetEltsUniqSet (go e0)
+
+    where
+
+    fusibleRef i
+        | Nothing <- isDataConId_maybe i
+        , Just tc <- tyConAppTyConPicky_maybe (varType i)
+        , isJust (lookupUFM fuseAnns (getName tc)) = unitUniqSet tc
+        | otherwise = emptyUniqSet
+
+    go (Var i) = fusibleRef i
+    go (Lit _) = emptyUniqSet
+    go (App e1 e2) = go e1 `unionUniqSets` go e2
+    go (Lam _ e) = go e
+    go (Let b e) = goBind b `unionUniqSets` go e
+    go (Case scrut _ _ alts) =
+        go scrut
+            `unionUniqSets`
+                unionManyUniqSets (map (\(ALT_CONSTR(_,_,e)) -> go e) alts)
+    go (Cast e _) = go e
+    go (Tick _ e) = go e
+    go (Type _) = emptyUniqSet
+    go (Coercion _) = emptyUniqSet
+
+    goBind (NonRec _ e) = go e
+    goBind (Rec bs) = unionManyUniqSets (map (go . snd) bs)
+
 -- | If the given top level bind's own binder carries an 'InspectPatternMatches'
 -- and/or an 'InspectConstructions' annotation, print a report of interesting
 -- types case-matched or constructed anywhere in its RHS, per the annotation's
@@ -399,23 +439,33 @@ normConstructions forbidFused anns d = do
 -- @verbose=1@) a single terse @found forbidden types@ line is printed; at
 -- @verbose=2@ and above the full "Inspecting ..." banner plus per-hit
 -- @SCRUTINIZE@/@CONSTRUCT@ breakdown is printed.
--- Returns the number of directives (0, 1 or 2) that reported a violation.
+-- Returns the number of directives (0, 1 or 2) that reported a violation, and
+-- a flag that is 'True' when the (non-violation) consumed-fusible advisory
+-- fired -- so the caller can dump the Core for it without counting it as a
+-- violation.
 reportInspected
     :: DynFlags -> ReportMode -> Bool -> Bool -> UNIQ_FM
     -> INSPECT_PM_FM -> INSPECT_CONSTR_FM
-    -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM Int
+    -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM (Int, Bool)
 reportInspected
         dflags reportMode forbidFused inspectUnboxed anns pmAnns constrAnns
         allBinds (NonRec b _)
-    | subsumedBySameName allBinds b = return 0
+    | subsumedBySameName allBinds b = return (0, False)
     | otherwise = do
         n1 <- maybe (return 0)
                 (\d -> normPatternMatches forbidFused anns d >>= go)
                 (lookupBinderAnn b pmAnns)
-        n2 <- maybe (return 0)
-                (\d -> normConstructions forbidFused anns d >>= go)
+        (n2, advised) <- maybe (return (0, False))
+                (\d -> do
+                    ni <- normConstructions forbidFused anns d
+                    r <- go ni
+                    -- Advisory only: references to fusible values that fusion
+                    -- would try to inline away. Not counted as a violation, but
+                    -- the returned flag lets the caller dump the Core for it.
+                    adv <- warnConsumedFusible ni
+                    return (r, adv))
                 (lookupBinderAnn b constrAnns)
-        return (n1 + n2)
+        return (n1 + n2, advised)
 
     where
 
@@ -464,6 +514,24 @@ reportInspected
                             ++ " entries (safe to remove): ["
                             ++ DL.intercalate ", " (map qualifiedName stale)
                             ++ "]"
+
+    -- Returns 'True' if any consumed-but-not-constructed fusible type was
+    -- reported, so the caller can dump the Core even though this is not a
+    -- violation.
+    warnConsumedFusible ni = do
+        let excluded = niExclusion ni
+            tycons = DL.nub
+                   $ concatMap (consumedFusibleTyCons anns . snd)
+                               (binderClosure allBinds b)
+            reported = filter ((`notElem` excluded) . getName) tycons
+        unless (null reported) $
+            putMsgS $ "fusion-plugin: "
+                    ++ binderDisplayName b
+                    ++ ": note: fusible type(s) consumed as var references,"
+                    ++ " not constructed:"
+                    ++ " [" ++ DL.intercalate ", " (map qualifiedTyConName reported)
+                    ++ "]"
+        return (not (null reported))
 
     terse ni results =
         let names = DL.nub (mapMaybe (contextQualifiedName . snd) results)
@@ -853,12 +921,12 @@ fusionReport mesg reportMode runInspect opts guts = do
             classAnns = iaClasses iAnns
             sizeAnns  = iaSizes iAnns
             dumpAnns  = iaDumps iAnns
-        n1 <- if runInspect
+        (n1, advised) <- if runInspect
               then reportInspected
                        dflags reportMode (optionsForbidFused opts)
                        (optionsInspectUnboxed opts)
                        anns pmAnns constrAnns allBinds bind
-              else return 0
+              else return (0, False)
         n2 <- if runInspect
               then reportInspectedClasses
                        dflags reportMode classAnns allBinds bind
@@ -880,7 +948,8 @@ fusionReport mesg reportMode runInspect opts guts = do
                 | hasDumpAnn = True
                 | otherwise =
                        (optionsDumpCoreIfAnnotated opts && hasViolationAnn)
-                    || (optionsDumpCoreIfViolated opts && n1 + n2 + n3 > 0)
+                    || (optionsDumpCoreIfViolated opts
+                            && (n1 + n2 + n3 > 0 || advised))
         when (shouldDump && notSubsumed) $
             dumpBindCore dflags pkgName modName allBinds b
         when (b `elemVarSet` liveBndrs) $ do
