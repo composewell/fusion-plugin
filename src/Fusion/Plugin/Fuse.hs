@@ -176,7 +176,7 @@ needInlineCaseAlt dflags parents anns bndr =
 
 -- XXX Can check the call site and return only those that would enable
 -- case-of-known constructor to kick in. Or is that not relevant?
---
+
 -- | Discover binders that start with a pattern match on constructors that are
 -- annotated with Fuse. For example, for the following code:
 --
@@ -198,6 +198,37 @@ needInlineCaseAlt dflags parents anns bndr =
 -- inline. The caller ('transformBind') is responsible for deduplicating the
 -- 'Left' paths by binder before warning, since the same @NOINLINE@'d binder
 -- can contain more than one matching case.
+--
+-- NOTE [Force-inlining vs inspection divergences]
+--
+-- This traversal (and 'constructingBinders' below) drives /force-inlining/:
+-- it finds local binders to mark INLINE so that fusion fires. The inspection
+-- traversal 'containsAnns' (in Fusion.Plugin.Inspect) walks the same Core to
+-- /report/ residual matches and constructions. The two deliberately differ;
+-- every difference below is a place where force-inlining skips (or narrows)
+-- something that inspection checks.
+--
+--  1. Case scrutinee. We never descend into a case scrutinee (the '_' in the
+--     'Case' patterns below), only into its alternatives. Force-inlining acts
+--     only on matches reachable on entry to a local binder, and in any case
+--     cannot force-inline something defined in another module. Inspection DOES
+--     descend into the scrutinee: a match buried there -- e.g. the stream
+--     stepper lambda passed to an un-inlined imported combinator like
+--     'foldBreak', which ends up in the scrutinee of the outer
+--     result-unpacking @case (# _, _ #)@ -- is still reported so the user can
+--     add an INLINE pragma in that other module.
+--
+--  2. Entry position only. We record a case-alt match only in "entry"
+--     position -- the 'True' flag argument to 'go' -- i.e. when the binder's
+--     body begins (modulo lambdas) with the case. Descending through
+--     App/Let/Cast or into a nested case resets the flag to 'False'.
+--     Inspection has no such flag; it reports matches anywhere in the binder.
+--
+--  3. Default-only / literal cases. 'needInlineCaseAlt' -> 'altsContainsAnn'
+--     recognizes an interesting type only through a matched data constructor,
+--     so a default-only case such as @case s of _ -> ...@ (e.g. @s :: SPEC@)
+--     is never a force-inline target. Inspection falls back to the case
+--     binder's type (its 'scrutHit') and reports these too.
 letBndrsThatAreCases
     :: DynFlags
     -> UNIQ_FM
@@ -219,7 +250,9 @@ letBndrsThatAreCases dflags anns bind = goLet [] bind
 
     -- Match and record the case alternative if it contains a constructor
     -- annotated with "Fuse" and traverse the Alt expressions to discover more
-    -- let bindings.
+    -- let bindings. The scrutinee ('_') is intentionally not traversed --
+    -- inspection does traverse it; see NOTE [Force-inlining vs inspection
+    -- divergences] item 1.
     go parents True (Case _ _ _ alts) =
         let result = alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents False expr1)
         in case needInlineCaseAlt dflags parents anns alts of
@@ -270,17 +303,45 @@ needInlineTyCon parent anns tycon =
         Just _ | not (hasInlineBinder parentBndr) -> InlineNeeded ()
         _ -> InlineNotNeeded
 
--- XXX Currently this function and containsAnns are equivalent. So containsAnns
--- can be used in place of this. But we may want to restrict this to certain
--- cases and keep containsAnns unrestricted so it is kept separate for now.
---
--- | Discover binders whose return type is a fusible constructor and the
--- constructor is directly used in the binder definition rather than through an
--- identifier.
+-- | Discover binders that either construct a fusible type or hold a reference
+-- to a fusible-typed value (a consumer, e.g. a join point) -- both are force-
+-- inline targets so that case-of-case can eliminate the value. See item 5 of
+-- the NOTE below for why references are included.
 --
 -- See 'letBndrsThatAreCases' for the meaning of the 'Either' result: 'Left'
 -- is a binder blocked from force-inlining by a user @NOINLINE@ pragma,
 -- 'Right' is an actual hit to force inline.
+--
+-- This is the construction-side counterpart of 'containsAnns' in
+-- Fusion.Plugin.Inspect, but it is NOT equivalent to it. Beyond the shared
+-- scrutinee skip (item 1 of NOTE [Force-inlining vs inspection divergences]),
+-- the construction detection itself differs:
+--
+--  4. Applied constructors. The App-spine data-constructor check below is
+--     commented out (force-inlining an applied constructor such as @Yield x y@
+--     can bloat code without a proven benefit), so here only bare 'Var' nodes
+--     are considered. Inspection's 'dataConHit' DOES fire on the head of an
+--     App spine, so it reports applied constructors.
+--
+--  5. Bare 'Var' predicate. We deliberately treat a 'Var' as a fusion trigger
+--     whenever its type is headed by a fusible 'TyCon' ('tyConAppTyConPicky_maybe'
+--     on its 'varType'), which fires not only for a nullary constructor but also
+--     for an ordinary reference to a value of that type. This is intentional and
+--     load-bearing: force-inlining must reach binders that merely /consume/ a
+--     fusible constructor -- e.g. a join point holding such a value -- because
+--     inlining the consumer is what lets case-of-case eliminate it. This was
+--     added in commit c9871cb ("Inline joins that consume fusible constructors")
+--     for the WordCount example from the streamly-examples repository; the
+--     committed Core that motivates it is in @design/join-constr-app.hs@ (see
+--     @design/README.md@ item 1), where the join point @$j_sm2u@ must be
+--     inlined so case-of-case can eliminate @SeqParseL@/@SeqParseR@. Do NOT
+--     tighten this to actual constructors.
+--     Inspection instead restricts its 'dataConHit' to real data-constructor
+--     'Id's ('isDataConId_maybe'): its job is to report /allocations/, and a
+--     plain reference allocates nothing (a bare 'Var' at a boxed type points at
+--     a box built elsewhere) -- reporting it was a false positive, fixed in
+--     commit 3ed86ee ("Fix a false positive allocation reporting"). So the two
+--     sides diverge on purpose, for opposite and individually-correct reasons.
 constructingBinders
     :: UNIQ_FM -> CoreBind -> [Either ([CoreBind], TyCon) ([CoreBind], Id)]
 constructingBinders anns bind = goLet [] bind
@@ -295,17 +356,23 @@ constructingBinders anns bind = goLet [] bind
     -- let expression as well.
     go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
 
-    -- Traverse these to discover new let bindings
+    -- Traverse the alternatives to discover new let bindings. The scrutinee
+    -- ('_') is intentionally not traversed -- inspection does traverse it; see
+    -- NOTE [Force-inlining vs inspection divergences] item 1.
     go parents (Case _ _ _ alts) =
         alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1)
     -- If the head of the application spine is a data constructor, record a hit
     -- for its type -- this recognizes a constructor applied to its fields
     -- (e.g. `Yield x y`), which checking a bare 'Var' node's own type cannot:
     -- the unapplied constructor 'Id' has a function type, not the constructed
-    -- type, so that check only fires for nullary constructors.
+    -- type, so the 'Var' check misses applied constructors. (The 'Var' check
+    -- still fires for nullary constructors and, by design, for any reference to
+    -- a fusible-typed value -- see item 5 above.)
     --
     -- XXX Inlining these cases can bloat the code, need to prove the benefit
-    -- before enabling this.
+    -- before enabling this. While disabled, applied constructors are not
+    -- force-inline targets, whereas inspection reports them; see NOTE
+    -- [Force-inlining vs inspection divergences] item 4.
     {-
     go parents e@(App _ _) =
         let (fun, args) = collectArgs e
@@ -325,7 +392,10 @@ constructingBinders anns bind = goLet [] bind
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
 
-    -- Check if the Var is a data constructor of interest
+    -- Fire when the Var's type is headed by a fusible constructor -- covering
+    -- both nullary constructors and (deliberately) references to fusible-typed
+    -- values, so consumers get inlined too. Broader than inspection on purpose;
+    -- see NOTE [Force-inlining vs inspection divergences] item 5.
     go parents (Var i) =
         let needInline = needInlineTyCon (head parents) anns
         in case tyConAppTyConPicky_maybe (varType i) of
