@@ -165,9 +165,13 @@ containsAnns dflags isInteresting bind =
     go parents (Lam _ expr1) = go parents expr1
     go parents (Cast expr1 _) = go parents expr1
 
-    -- There are no let bindings in these.
+    -- A 'Tick' (cost-centre, HPC, or debug/source note, present under -prof,
+    -- -fhpc, or -g) wraps a sub-expression, which may itself contain matches or
+    -- constructions, so descend into it.
+    go parents (Tick _ expr1) = go parents expr1
+
+    -- These carry no sub-expression to traverse.
     go _ (Lit _) = []
-    go _ (Tick _ _) = []
     go _ (Type _) = []
     go _ (Coercion _) = []
 
