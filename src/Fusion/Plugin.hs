@@ -160,16 +160,11 @@ import Fusion.Plugin.Inspect
 -- ghc-options: -fplugin-opt=Fusion.Plugin:inspect-unboxed
 -- @
 --
--- By default a pattern match on one of the annotated function's own top-level
--- parameters (the leading lambda binders of its RHS, including those of its
--- direct @$w@ worker) is treated as an unavoidable /boundary/ unpack of a value
--- handed in from outside the binding, not a fusion failure, and is excluded
--- from the pattern-match report. Matches on values produced within the binding
--- are still reported -- this includes the parameters of nested steppers and
--- join points, of internal specializations (e.g. a SpecConstr @$s@ binding),
--- and of any binding that takes part in a recursion cycle, all of which carry
--- loop state rather than arguments. The @detect-boundary-matches@ option
--- includes the boundary matches as well:
+-- By default the plugin excludes unavoidable function /boundary/ crossings
+-- from the reports, pattern matches on the function's arguments are not
+-- reported as violations, similarly construction of the return values of a
+-- function are not reported. The @detect-boundary-matches@ option includes the
+-- boundary matches and constructions as well:
 --
 -- @
 -- ghc-options: -fplugin-opt=Fusion.Plugin:detect-boundary-matches

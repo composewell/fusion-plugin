@@ -87,25 +87,31 @@ import Fusion.Plugin.Common
 -- where @s :: SPEC@ -- whose type comes from the case binder;
 -- 3. 'Constr' is a construction or bare boxed use.
 --
--- The 'Bool' carried by 'CaseAlt' and 'CaseScrut' is the /boundary/ flag: it is
--- 'True' when the scrutinized value is one of a /user/ binding's own top-level
--- parameters -- the leading lambda binders of its RHS -- i.e. a value handed in
--- from outside rather than produced within it, so deconstructing it is an
--- unavoidable boundary unpack, not a fusion failure.
+-- The 'Bool' each constructor carries is the /boundary/ flag -- 'True' for an
+-- unavoidable crossing of the binding's boundary, not a fusion failure. The two
+-- sides are dual:
 --
--- Two things are excluded, both because they carry values produced within the
--- binding rather than external input: (1) lambdas nested below the top-level
--- parameters (stepper functions, join points, continuations); (2) the
--- parameters of any binding that is not the annotated function itself, or that
--- takes part in a recursion cycle -- i.e. internal helpers, specializations
--- and loops whose parameters are state, not arguments (see
--- 'boundaryEligibleBinder'). The annotated function's direct @$w@ worker /is/
--- included, so its parameters -- the user's actual arguments -- are
--- boundaries. A @case@ on anything excluded is a real fusion hit.
+-- * Pattern match ('CaseAlt', 'CaseScrut') -- the /input/ boundary: 'True' when
+--   the scrutinized value is one of an eligible binding's own top-level
+--   parameters (the leading lambda binders of its RHS), input handed in from
+--   outside, so an unavoidable unpack.
+--
+-- * Construction ('Constr') -- the /output/ boundary: 'True' when the
+--   construction sits in the binding's return\/tail position, output handed back
+--   to the caller, so an unavoidable repack.
+--
+-- Excluded on the input side (flag 'False', so reported): lambdas nested below
+-- the top-level parameters (stepper functions, join points, continuations),
+-- and the parameters of any binding that is not the annotated function itself
+-- or that takes part in a recursion cycle (see 'boundaryEligibleBinder'); the
+-- annotated function's direct @$w@ worker /is/ included. Excluded on the
+-- output side: any construction not in the direct tail spine -- one fed into a
+-- call\/jump, let-bound, or built inside a nested lambda -- since it is
+-- consumed within the binding. Anything excluded is a real fusion hit.
 data Context
     = CaseAlt Bool (Alt CoreBndr)
     | CaseScrut Bool CoreBndr
-    | Constr Id
+    | Constr Bool Id
 
 -- Inspection detects everything detectable: it looks for interesting types
 -- everywhere in a binding, in every subexpression including case scrutinees.
@@ -202,7 +208,9 @@ containsAnns dflags isInteresting boundaryEligible bind =
             -- input, so we seed no boundary here and report all its matches.
             lams | boundaryEligible = mkVarSet (filter isId bndrs)
                  | otherwise        = emptyVarSet
-        in go lams [b] body
+            -- The body is in return position only for an eligible binding;
+            -- there its tail constructions are the unavoidable output repack.
+        in go boundaryEligible lams [b] body
     goBind (Rec bs) = bs >>= (\(v, e) -> goBind (NonRec v e))
 
     -- A @case@ scrutinee is a boundary unpack when, after peeling any 'Cast' or
@@ -227,11 +235,17 @@ containsAnns dflags isInteresting boundaryEligible bind =
     -- or nullary (a bare 'Var', e.g. `Nothing`, `[]`). An ordinary variable is
     -- not: even at a boxed type like `Int` it only references a value boxed
     -- elsewhere, so it allocates nothing.
-    dataConHit :: [CoreBind] -> Id -> [([CoreBind], Context)]
-    dataConHit parents i
+    dataConHit :: Bool -> [CoreBind] -> Id -> [([CoreBind], Context)]
+    dataConHit inRet parents i
         | Just dcon <- isDataConId_maybe i
-        , isInteresting (getName (dataConTyCon dcon)) = [(parents, Constr i)]
+        , isInteresting (getName (dataConTyCon dcon)) = [(parents, Constr inRet i)]
         | otherwise = []
+
+    -- A saturated data-constructor application: its fields are themselves part
+    -- of the returned value when the construction is in return position.
+    isConApp :: CoreExpr -> Bool
+    isConApp (Var i) = isJust (isDataConId_maybe i)
+    isConApp _       = False
 
     -- Like 'dataConHit' but keyed on a binder's /type/ rather than a data
     -- constructor: a scrutiny hit when the case binder's type is an
@@ -244,7 +258,9 @@ containsAnns dflags isInteresting boundaryEligible bind =
                 [(parents, CaseScrut boundary bndr)]
             _ -> []
 
-    go :: VarSet -> [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
+    -- The 'Bool' is 'inRet': whether the current position is the binding's
+    -- return/tail position, used to flag a construction as an output boundary.
+    go :: Bool -> VarSet -> [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
 
     -- Match and record the case alternative if it contains a constructor
     -- annotated with "Fuse", and traverse both the scrutinee and the Alt
@@ -252,11 +268,13 @@ containsAnns dflags isInteresting boundaryEligible bind =
     -- scrutinee ('scrut') matters for matches buried there -- e.g. a stream
     -- stepper lambda passed to an un-inlined imported combinator (such as
     -- 'foldBreak'), which lands in the scrutinee of the outer result-unpacking
-    -- @case (# _, _ #)@.
-    go lams parents (Case scrut caseBndr _ alts) =
+    -- @case (# _, _ #)@. The scrutinee is not in return position; each alt
+    -- inherits the case's return position.
+    go inRet lams parents (Case scrut caseBndr _ alts) =
         let binders =
-                   go lams parents scrut
-                ++ (alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go lams parents expr1))
+                   go False lams parents scrut
+                ++ (alts >>= (\(ALT_CONSTR(_,_,expr1)) ->
+                                  go inRet lams parents expr1))
             boundary = isBoundaryScrut lams scrut
             hit =
                 case altsContainsAnn dflags isInteresting alts of
@@ -269,37 +287,46 @@ containsAnns dflags isInteresting boundaryEligible bind =
                     Nothing -> scrutHit parents boundary caseBndr
         in hit ++ binders
 
-    go lams parents e@(App _ _) =
+    -- A construction's fields stay in return position; the arguments of an
+    -- ordinary call/jump are consumed inputs, so they leave return position.
+    go inRet lams parents e@(App _ _) =
         let (fun, args) = collectArgs e
             hit = case fun of
-                Var i -> dataConHit parents i
+                Var i -> dataConHit inRet parents i
                 _ -> []
-        in hit ++ go lams parents fun ++ concatMap (go lams parents) args
+            argRet = inRet && isConApp fun
+        in hit
+            ++ go inRet lams parents fun
+            ++ concatMap (go argRet lams parents) args
 
-    go _ parents (Var i) = dataConHit parents i
+    go inRet _ parents (Var i) = dataConHit inRet parents i
 
     -- Recursive traversal
-    go lams parents (Let bndr expr1) =
-        goLet lams parents bndr ++ go lams parents expr1
+    go inRet lams parents (Let bndr expr1) =
+        goLet lams parents bndr ++ go inRet lams parents expr1
     -- A lambda nested below the top-level parameters (a stepper, join point or
     -- continuation) binds a value produced within the binding, not one handed in
-    -- from outside, so it does /not/ extend 'lams'. Only the RHS's leading
+    -- from outside, so it does /not/ extend 'lams'; nor is its body the outer
+    -- binding's return, so 'inRet' drops to 'False'. Only the RHS's leading
     -- lambdas, seeded in 'goBind', are boundary parameters.
-    go lams parents (Lam _ expr1) = go lams parents expr1
-    go lams parents (Cast expr1 _) = go lams parents expr1
+    go _ lams parents (Lam _ expr1) = go False lams parents expr1
+    go inRet lams parents (Cast expr1 _) = go inRet lams parents expr1
 
     -- A 'Tick' (cost-centre, HPC, or debug/source note, present under -prof,
     -- -fhpc, or -g) wraps a sub-expression, which may itself contain matches or
     -- constructions, so descend into it.
-    go lams parents (Tick _ expr1) = go lams parents expr1
+    go inRet lams parents (Tick _ expr1) = go inRet lams parents expr1
 
     -- These carry no sub-expression to traverse.
-    go _ _ (Lit _) = []
-    go _ _ (Type _) = []
-    go _ _ (Coercion _) = []
+    go _ _ _ (Lit _) = []
+    go _ _ _ (Type _) = []
+    go _ _ _ (Coercion _) = []
 
+    -- A let-bound RHS is not the binding's return value (conservatively: we do
+    -- not chase a let-bound construction that is later returned through its
+    -- binder), so it is traversed with 'inRet' = 'False'.
     goLet :: VarSet -> [CoreBind] -> CoreBind -> [([CoreBind], Context)]
-    goLet lams parents bndr@(NonRec _ expr1) = go lams (bndr : parents) expr1
+    goLet lams parents bndr@(NonRec _ expr1) = go False lams (bndr : parents) expr1
     goLet lams parents (Rec bs) =
         bs >>= (\(b, expr1) -> goLet lams parents $ NonRec b expr1)
 
@@ -309,7 +336,7 @@ contextTyConName (CaseAlt _ (ALT_CONSTR(DataAlt dcon,_,_))) =
 contextTyConName (CaseAlt _ _) = Nothing
 contextTyConName (CaseScrut _ bndr) =
     getName <$> tyConAppTyConPicky_maybe (varType bndr)
-contextTyConName (Constr con) = getName <$> constrTyCon con
+contextTyConName (Constr _ con) = getName <$> constrTyCon con
 
 -- | Like 'contextTyConName' but yields the fully-qualified @Module.Type@ name
 -- (via 'qualifiedTyConName') used in reports rather than the raw 'Name'.
@@ -319,7 +346,7 @@ contextQualifiedName (CaseAlt _ (ALT_CONSTR(DataAlt dcon,_,_))) =
 contextQualifiedName (CaseAlt _ _) = Nothing
 contextQualifiedName (CaseScrut _ bndr) =
     qualifiedTyConName <$> tyConAppTyConPicky_maybe (varType bndr)
-contextQualifiedName (Constr con) = qualifiedTyConName <$> constrTyCon con
+contextQualifiedName (Constr _ con) = qualifiedTyConName <$> constrTyCon con
 
 -- | Drop any hit whose TyCon 'Name' is in the given exclusion list.
 filterExcluded
@@ -333,18 +360,18 @@ filterExcluded excl =
 isPatternMatch :: Context -> Bool
 isPatternMatch (CaseAlt _ _)   = True
 isPatternMatch (CaseScrut _ _) = True
-isPatternMatch (Constr _)      = False
+isPatternMatch (Constr _ _)    = False
 
 -- | True when the hit is an unavoidable boundary pattern deconstruction.
 isBoundary :: Context -> Bool
 isBoundary (CaseAlt b _)   = b
 isBoundary (CaseScrut b _) = b
-isBoundary (Constr _)      = False
+isBoundary (Constr b _)    = b
 
 -- | True when the type occurs in a constructing (allocating) position -- a
 -- value being built here.
 isConstruction :: Context -> Bool
-isConstruction (Constr _)      = True
+isConstruction (Constr _ _)    = True
 isConstruction (CaseAlt _ _)   = False
 isConstruction (CaseScrut _ _) = False
 
@@ -374,7 +401,7 @@ isBoxedHit (CaseAlt _ _) = True
 isBoxedHit (CaseScrut _ bndr) =
     maybe True (not . isUnboxedTyCon)
         (tyConAppTyConPicky_maybe (varType bndr))
-isBoxedHit (Constr con) =
+isBoxedHit (Constr _ con) =
     case isDataConId_maybe con of
         -- A genuine data-constructor 'Id' is never itself the "bare
         -- reference to something of function type" this guards against
@@ -693,7 +720,7 @@ reportInspected
 
             getConstrs x =
                 case x of
-                    (bs, Constr con) -> Just (bs, con)
+                    (bs, Constr _ con) -> Just (bs, con)
                     _ -> Nothing
             constrs = mapMaybe getConstrs results
             uniqConstr = DL.nub (map (getNonRecBinder . head . fst) constrs)
@@ -1115,7 +1142,7 @@ fusionReport mesg reportMode runInspect opts guts = do
             -- let constrs = constructingBinders anns bind
             let getConstrs x =
                     case x of
-                        (bs, Constr con) -> Just (bs, con)
+                        (bs, Constr _ con) -> Just (bs, con)
                         _ -> Nothing
             let constrs = mapMaybe getConstrs results
             let uniqConstr = DL.nub (map (getNonRecBinder. head . fst) constrs)
