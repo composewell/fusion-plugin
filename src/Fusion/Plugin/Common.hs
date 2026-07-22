@@ -21,6 +21,7 @@ module Fusion.Plugin.Common
     , lookupBinderAnn
     , subsumedBySameName
     , binderClosure
+    , exprVarOccs
 
     -- * Context / annotation traversal
     , altsContainsAnn
@@ -184,6 +185,7 @@ data Options = Options
     , optionsCsvAppend :: Bool
     , optionsForbidFused :: Bool
     , optionsInspectUnboxed :: Bool
+    , optionsDetectBoundaryMatches :: Bool
     } deriving Show
 
 -- Checks whether a case alternative contains a type for which the given

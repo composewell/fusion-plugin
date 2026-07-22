@@ -48,6 +48,7 @@ import Fusion.Plugin.Common
     , binderDisplayName
     , constrTyCon
     , dumpBindCore
+    , exprVarOccs
     , getAnnotationsByStableName
     , getNonRecBinder
     , listPath
@@ -85,25 +86,141 @@ import Fusion.Plugin.Common
 -- (or literal) @case@ that merely forces a value, e.g. @case s of _ -> ...@
 -- where @s :: SPEC@ -- whose type comes from the case binder;
 -- 3. 'Constr' is a construction or bare boxed use.
-data Context = CaseAlt (Alt CoreBndr) | CaseScrut CoreBndr | Constr Id
+--
+-- The 'Bool' carried by 'CaseAlt' and 'CaseScrut' is the /boundary/ flag: it is
+-- 'True' when the scrutinized value is one of a /user/ binding's own top-level
+-- parameters -- the leading lambda binders of its RHS -- i.e. a value handed in
+-- from outside rather than produced within it, so deconstructing it is an
+-- unavoidable boundary unpack, not a fusion failure.
+--
+-- Two things are excluded, both because they carry values produced within the
+-- binding rather than external input: (1) lambdas nested below the top-level
+-- parameters (stepper functions, join points, continuations); (2) the
+-- parameters of any binding that is not the annotated function itself, or that
+-- takes part in a recursion cycle -- i.e. internal helpers, specializations
+-- and loops whose parameters are state, not arguments (see
+-- 'boundaryEligibleBinder'). The annotated function's direct @$w@ worker /is/
+-- included, so its parameters -- the user's actual arguments -- are
+-- boundaries. A @case@ on anything excluded is a real fusion hit.
+data Context
+    = CaseAlt Bool (Alt CoreBndr)
+    | CaseScrut Bool CoreBndr
+    | Constr Id
 
 -- Inspection detects everything detectable: it looks for interesting types
 -- everywhere in a binding, in every subexpression including case scrutinees.
 -- (Force-inlining is deliberately narrower; those choices are documented in
 -- Fusion.Plugin.Fuse)
 --
+-- | Whether the leading parameters of a binding in the annotated function's
+-- closure are a genuine argument /boundary/ (see 'Context'). Two conditions
+-- must both hold:
+--
+-- 1. The binding /is/ the annotated function: its display name (which strips a
+--    @$w@ worker prefix, see 'binderDisplayName') equals the annotated binder's.
+--    This admits the user function and its direct @$w@ worker -- whose leading
+--    lambdas carry the user's actual arguments (e.g. @$wfinallyIO size start@)
+--    -- while rejecting internal helpers and specializations that the optimizer
+--    named differently (e.g. a SpecConstr @$s$wgo@), whose parameters are loop
+--    state, not arguments.
+--
+-- 2. The binding takes part in no recursion cycle -- direct /or/ mutual (see
+--    'participatesInCycle'). A binding in a cycle is a loop, and a parameter it
+--    threads back around the cycle is loop state, not a once-per-entry argument
+--    unpack.
+--
+-- Any binding failing either test contributes no boundaries, so all its matches
+-- are reported.
+boundaryEligibleBinder
+    :: [(CoreBndr, CoreExpr)] -> CoreBndr -> CoreBndr -> CoreExpr -> Bool
+boundaryEligibleBinder allBinds root v e =
+       binderDisplayName v == binderDisplayName root
+    -- The commented check is cheaper, but a direct self-reference check would
+    -- miss a loop routed through a same-named helper (@$wf -> $s$wgo -> $wf@);
+    -- the reachability check does not, so a real fusion hit can never be
+    -- hidden in a recursive worker.
+    -- && not (v `elemVarSet` exprVarOccs e)
+    && not (participatesInCycle allBinds v e)
+
+-- | True if 'v' can be reached from its own RHS 'e' by following term-level
+-- references transitively within 'allBinds' -- i.e. 'v' takes part in a
+-- recursion cycle, whether direct (@v@'s RHS mentions @v@) or mutual (through
+-- one or more other bindings that lead back to @v@).
+--
+-- TODO(perf): called per closure member with an O(n) list 'lookup' and a
+-- rebuilt 'topSet'. For huge modules, precompute the cyclic members once from
+-- 'binderClosure' and make eligibility an O(1) set lookup.
+participatesInCycle :: [(CoreBndr, CoreExpr)] -> CoreBndr -> CoreExpr -> Bool
+participatesInCycle allBinds v e0 = reach (refsOf e0) emptyVarSet
+
+    where
+
+    topSet = mkVarSet (map fst allBinds)
+
+    -- The top-level binders directly referenced by an expression.
+    refsOf e = nonDetEltsUniqSet (intersectVarSet (exprVarOccs e) topSet)
+
+    reach [] _ = False
+    reach (w : ws) seen
+        | w == v               = True
+        | w `elemVarSet` seen  = reach ws seen
+        | otherwise            =
+            case lookup w allBinds of
+                Just e  -> reach (refsOf e ++ ws) (extendVarSet seen w)
+                Nothing -> reach ws (extendVarSet seen w)
+
 -- | Report whether data constructors of interest are case matched or returned
 -- anywhere in the binders, not just case match on entry or construction on
 -- return.
 --
 containsAnns
-    :: DynFlags -> (Name -> Bool) -> CoreBind -> [([CoreBind], Context)]
-containsAnns dflags isInteresting bind =
-    -- The first argument is current binder and its parent chain. We add a new
-    -- element to this path when we enter a let statement.
-    goLet [] bind
+    :: DynFlags -> (Name -> Bool) -> Bool -> CoreBind
+    -> [([CoreBind], Context)]
+containsAnns dflags isInteresting boundaryEligible bind =
+    -- 'parents' is the current binder's let-parent chain (extended on entry to
+    -- each let). 'lams' holds the binding's own top-level parameters: a @case@
+    -- on one of them is a boundary unpack (see 'Context'). It is seeded once,
+    -- from the leading lambdas of the RHS, and never extended -- lambdas nested
+    -- deeper (steppers, join points) bind values produced within the binding.
+    goBind bind
 
     where
+
+    -- Split a binding's RHS into its leading lambda binders (the function's own
+    -- parameters) and the body under them.
+    collectLams :: CoreExpr -> ([CoreBndr], CoreExpr)
+    collectLams (Lam b e) = let (bs, body) = collectLams e in (b : bs, body)
+    collectLams e         = ([], e)
+
+    goBind :: CoreBind -> [([CoreBind], Context)]
+    goBind b@(NonRec _ e) =
+        let (bndrs, body) = collectLams e
+            -- A boundary exists only at a user function's signature. In a
+            -- compiler-generated binding (a @$w@ worker, a @$s@ specialization,
+            -- etc.) the leading lambdas are internal plumbing -- loop state or
+            -- specialized arguments the optimizer invented -- not external
+            -- input, so we seed no boundary here and report all its matches.
+            lams | boundaryEligible = mkVarSet (filter isId bndrs)
+                 | otherwise        = emptyVarSet
+        in go lams [b] body
+    goBind (Rec bs) = bs >>= (\(v, e) -> goBind (NonRec v e))
+
+    -- A @case@ scrutinee is a boundary unpack when, after peeling any 'Cast' or
+    -- 'Tick' wrappers, it is a bare reference to a top-level parameter. An
+    -- application head (e.g. @step s@) is deliberately not peeled: that is a
+    -- computed value, not a parameter, so it is not a boundary.
+    scrutVar :: CoreExpr -> Maybe Id
+    scrutVar (Var v)    = Just v
+    scrutVar (Cast e _) = scrutVar e
+    scrutVar (Tick _ e) = scrutVar e
+    scrutVar _          = Nothing
+
+    -- We exclude by boundary rather than positively selecting let-bound
+    -- scrutinees: a leftover `case step s of Yield/..` has an /application/
+    -- scrutinee (not a let binder), and that is the main failure to catch.
+    isBoundaryScrut :: VarSet -> CoreExpr -> Bool
+    isBoundaryScrut lams scrut =
+        maybe False (`elemVarSet` lams) (scrutVar scrut)
 
     -- A data-constructor 'Id' of an interesting type is a construction hit,
     -- whether applied to its fields (head of an 'App' spine, e.g. `Yield x y`)
@@ -120,14 +237,14 @@ containsAnns dflags isInteresting bind =
     -- constructor: a scrutiny hit when the case binder's type is an
     -- interesting TyCon. Used for a default-only (or literal) case, which
     -- matches no data constructor, so the type must come from the scrutinee.
-    scrutHit :: [CoreBind] -> CoreBndr -> [([CoreBind], Context)]
-    scrutHit parents bndr =
+    scrutHit :: [CoreBind] -> Bool -> CoreBndr -> [([CoreBind], Context)]
+    scrutHit parents boundary bndr =
         case tyConAppTyConPicky_maybe (varType bndr) of
             Just tycon | isInteresting (getName tycon) ->
-                [(parents, CaseScrut bndr)]
+                [(parents, CaseScrut boundary bndr)]
             _ -> []
 
-    go :: [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
+    go :: VarSet -> [CoreBind] -> CoreExpr -> [([CoreBind], Context)]
 
     -- Match and record the case alternative if it contains a constructor
     -- annotated with "Fuse", and traverse both the scrutinee and the Alt
@@ -136,65 +253,71 @@ containsAnns dflags isInteresting bind =
     -- stepper lambda passed to an un-inlined imported combinator (such as
     -- 'foldBreak'), which lands in the scrutinee of the outer result-unpacking
     -- @case (# _, _ #)@.
-    go parents (Case scrut caseBndr _ alts) =
+    go lams parents (Case scrut caseBndr _ alts) =
         let binders =
-                   go parents scrut
-                ++ (alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go parents expr1))
+                   go lams parents scrut
+                ++ (alts >>= (\(ALT_CONSTR(_,_,expr1)) -> go lams parents expr1))
+            boundary = isBoundaryScrut lams scrut
             hit =
                 case altsContainsAnn dflags isInteresting alts of
-                    Just x -> [(parents, CaseAlt x)]
+                    Just x -> [(parents, CaseAlt boundary x)]
                     -- 'altsContainsAnn' recognizes an interesting type only
                     -- through a matched data constructor. A default-only (or
                     -- literal) case has none, so fall back to the scrutinee's
                     -- type -- otherwise e.g. `case s of _ -> ...` with `s ::
                     -- SPEC` would go unreported.
-                    Nothing -> scrutHit parents caseBndr
+                    Nothing -> scrutHit parents boundary caseBndr
         in hit ++ binders
 
-    go parents e@(App _ _) =
+    go lams parents e@(App _ _) =
         let (fun, args) = collectArgs e
             hit = case fun of
                 Var i -> dataConHit parents i
                 _ -> []
-        in hit ++ go parents fun ++ concatMap (go parents) args
+        in hit ++ go lams parents fun ++ concatMap (go lams parents) args
 
-    go parents (Var i) = dataConHit parents i
+    go _ parents (Var i) = dataConHit parents i
 
     -- Recursive traversal
-    go parents (Let bndr expr1) = goLet parents bndr ++ go parents expr1
-    go parents (Lam _ expr1) = go parents expr1
-    go parents (Cast expr1 _) = go parents expr1
+    go lams parents (Let bndr expr1) =
+        goLet lams parents bndr ++ go lams parents expr1
+    -- A lambda nested below the top-level parameters (a stepper, join point or
+    -- continuation) binds a value produced within the binding, not one handed in
+    -- from outside, so it does /not/ extend 'lams'. Only the RHS's leading
+    -- lambdas, seeded in 'goBind', are boundary parameters.
+    go lams parents (Lam _ expr1) = go lams parents expr1
+    go lams parents (Cast expr1 _) = go lams parents expr1
 
     -- A 'Tick' (cost-centre, HPC, or debug/source note, present under -prof,
     -- -fhpc, or -g) wraps a sub-expression, which may itself contain matches or
     -- constructions, so descend into it.
-    go parents (Tick _ expr1) = go parents expr1
+    go lams parents (Tick _ expr1) = go lams parents expr1
 
     -- These carry no sub-expression to traverse.
-    go _ (Lit _) = []
-    go _ (Type _) = []
-    go _ (Coercion _) = []
+    go _ _ (Lit _) = []
+    go _ _ (Type _) = []
+    go _ _ (Coercion _) = []
 
-    goLet :: [CoreBind] -> CoreBind -> [([CoreBind], Context)]
-    goLet parents bndr@(NonRec _ expr1) = go (bndr : parents) expr1
-    goLet parents (Rec bs) =
-        bs >>= (\(b, expr1) -> goLet parents $ NonRec b expr1)
+    goLet :: VarSet -> [CoreBind] -> CoreBind -> [([CoreBind], Context)]
+    goLet lams parents bndr@(NonRec _ expr1) = go lams (bndr : parents) expr1
+    goLet lams parents (Rec bs) =
+        bs >>= (\(b, expr1) -> goLet lams parents $ NonRec b expr1)
 
 contextTyConName :: Context -> Maybe Name
-contextTyConName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+contextTyConName (CaseAlt _ (ALT_CONSTR(DataAlt dcon,_,_))) =
     Just (getName $ dataConTyCon dcon)
-contextTyConName (CaseAlt _) = Nothing
-contextTyConName (CaseScrut bndr) =
+contextTyConName (CaseAlt _ _) = Nothing
+contextTyConName (CaseScrut _ bndr) =
     getName <$> tyConAppTyConPicky_maybe (varType bndr)
 contextTyConName (Constr con) = getName <$> constrTyCon con
 
 -- | Like 'contextTyConName' but yields the fully-qualified @Module.Type@ name
 -- (via 'qualifiedTyConName') used in reports rather than the raw 'Name'.
 contextQualifiedName :: Context -> Maybe String
-contextQualifiedName (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+contextQualifiedName (CaseAlt _ (ALT_CONSTR(DataAlt dcon,_,_))) =
     Just (qualifiedTyConName (dataConTyCon dcon))
-contextQualifiedName (CaseAlt _) = Nothing
-contextQualifiedName (CaseScrut bndr) =
+contextQualifiedName (CaseAlt _ _) = Nothing
+contextQualifiedName (CaseScrut _ bndr) =
     qualifiedTyConName <$> tyConAppTyConPicky_maybe (varType bndr)
 contextQualifiedName (Constr con) = qualifiedTyConName <$> constrTyCon con
 
@@ -208,16 +331,22 @@ filterExcluded excl =
 -- position -- a value being deconstructed. Note this is a /use/ of the value,
 -- not an allocation: the box was allocated elsewhere (see 'isBoxedHit').
 isPatternMatch :: Context -> Bool
-isPatternMatch (CaseAlt _)   = True
-isPatternMatch (CaseScrut _) = True
-isPatternMatch (Constr _)    = False
+isPatternMatch (CaseAlt _ _)   = True
+isPatternMatch (CaseScrut _ _) = True
+isPatternMatch (Constr _)      = False
+
+-- | True when the hit is an unavoidable boundary pattern deconstruction.
+isBoundary :: Context -> Bool
+isBoundary (CaseAlt b _)   = b
+isBoundary (CaseScrut b _) = b
+isBoundary (Constr _)      = False
 
 -- | True when the type occurs in a constructing (allocating) position -- a
 -- value being built here.
 isConstruction :: Context -> Bool
-isConstruction (Constr _)    = True
-isConstruction (CaseAlt _)   = False
-isConstruction (CaseScrut _) = False
+isConstruction (Constr _)      = True
+isConstruction (CaseAlt _ _)   = False
+isConstruction (CaseScrut _ _) = False
 
 -- | True for unboxed TyCons: unboxed primitives (e.g. 'Int#', 'State#'),
 -- unboxed tuples and unboxed sums.
@@ -239,10 +368,10 @@ isUnboxedTyCon tycon =
 --
 -- This covers all usage including case scrutiny as well as construction.
 isBoxedHit :: Context -> Bool
-isBoxedHit (CaseAlt (ALT_CONSTR(DataAlt dcon,_,_))) =
+isBoxedHit (CaseAlt _ (ALT_CONSTR(DataAlt dcon,_,_))) =
     not (isUnboxedTyCon (dataConTyCon dcon))
-isBoxedHit (CaseAlt _) = True
-isBoxedHit (CaseScrut bndr) =
+isBoxedHit (CaseAlt _ _) = True
+isBoxedHit (CaseScrut _ bndr) =
     maybe True (not . isUnboxedTyCon)
         (tyConAppTyConPicky_maybe (varType bndr))
 isBoxedHit (Constr con) =
@@ -444,12 +573,12 @@ consumedFusibleTyCons fuseAnns e0 =
 -- fired -- so the caller can dump the Core for it without counting it as a
 -- violation.
 reportInspected
-    :: DynFlags -> ReportMode -> Bool -> Bool -> UNIQ_FM
+    :: DynFlags -> ReportMode -> Bool -> Bool -> Bool -> UNIQ_FM
     -> INSPECT_PM_FM -> INSPECT_CONSTR_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM (Int, Bool)
 reportInspected
-        dflags reportMode forbidFused inspectUnboxed anns pmAnns constrAnns
-        allBinds (NonRec b _)
+        dflags reportMode forbidFused inspectUnboxed detectBoundary
+        anns pmAnns constrAnns allBinds (NonRec b _)
     | subsumedBySameName allBinds b = return (0, False)
     | otherwise = do
         n1 <- maybe (return 0)
@@ -480,9 +609,18 @@ reportInspected
                 || maybe False (`elem` explicit) (contextTyConName ctx)
         let allHits = filter (inPosition . snd)
                     $ filter keep
+                    $ filter (\(_, ctx) ->
+                                  detectBoundary || not (isBoundary ctx))
+                    -- Boundary detection runs on every closure member, worker
+                    -- included -- not just the wrapper. A sum-typed argument is
+                    -- not W/W-unpacked, so its boundary unpack lands in the
+                    -- worker, and an inlined-away wrapper leaves the worker as
+                    -- the only binder holding the arg unpacks.
                     $ concatMap
                         (\(v, e) ->
-                            containsAnns dflags isInteresting (NonRec v e))
+                            containsAnns dflags isInteresting
+                                (boundaryEligibleBinder allBinds b v e)
+                                (NonRec v e))
                         (binderClosure allBinds b)
             results = filterExcluded exclusion allHits
         warnStalePermitted ni allHits
@@ -546,8 +684,8 @@ reportInspected
                 ++ ": inspecting (" ++ niBanner ni ++ ")..."
         let getAlts x =
                 case x of
-                    (bs, CaseAlt alt) -> Just (bs, Left alt)
-                    (bs, CaseScrut bndr) -> Just (bs, Right bndr)
+                    (bs, CaseAlt _ alt) -> Just (bs, Left alt)
+                    (bs, CaseScrut _ bndr) -> Just (bs, Right bndr)
                     _ -> Nothing
             patternMatches = mapMaybe getAlts results
             uniqBinders =
@@ -564,7 +702,7 @@ reportInspected
             uniqBinders patternMatches showDetailsScrutinize
         showInfo b dflags reportMode "CONSTRUCT"
             uniqConstr constrs showDetailsConstr
-reportInspected _ _ _ _ _ _ _ _ (Rec _) =
+reportInspected _ _ _ _ _ _ _ _ _ (Rec _) =
     error "reportInspected: expecting only NonRec binders"
 
 -------------------------------------------------------------------------------
@@ -915,7 +1053,7 @@ fusionReport mesg reportMode runInspect opts guts = do
         -> String -> String -> VarSet -> [(CoreBndr, CoreExpr)]
         -> CoreBind -> CoreM Int
     transformBind dflags anns iAnns
-            pkgName modName liveBndrs allBinds bind@(NonRec b _) = do
+            pkgName modName liveBndrs allBinds bind@(NonRec b rhs) = do
         let pmAnns    = iaPatternMatches iAnns
             constrAnns = iaConstructions iAnns
             classAnns = iaClasses iAnns
@@ -925,6 +1063,7 @@ fusionReport mesg reportMode runInspect opts guts = do
               then reportInspected
                        dflags reportMode (optionsForbidFused opts)
                        (optionsInspectUnboxed opts)
+                       (optionsDetectBoundaryMatches opts)
                        anns pmAnns constrAnns allBinds bind
               else return (0, False)
         n2 <- if runInspect
@@ -953,12 +1092,21 @@ fusionReport mesg reportMode runInspect opts guts = do
         when (shouldDump && notSubsumed) $
             dumpBindCore dflags pkgName modName allBinds b
         when (b `elemVarSet` liveBndrs) $ do
-            let results = keepBoxedOnly
-                        $ containsAnns dflags (isJust . lookupUFM anns) bind
+            -- Drop boundary unpacks here too (unless overridden), just as the
+            -- annotated report does. With no annotated root, 'b' is its own
+            -- root, so eligibility reduces to the cycle check (see
+            -- 'boundaryEligibleBinder'): 'b's own arguments are boundaries
+            -- unless 'b' is a loop.
+            let detectBoundary = optionsDetectBoundaryMatches opts
+                results = filter (\(_, ctx) ->
+                                      detectBoundary || not (isBoundary ctx))
+                        $ keepBoxedOnly
+                        $ containsAnns dflags (isJust . lookupUFM anns)
+                              (boundaryEligibleBinder allBinds b b rhs) bind
 
             let getAlts x =
                     case x of
-                        (bs, CaseAlt alt) -> Just (bs, alt)
+                        (bs, CaseAlt _ alt) -> Just (bs, alt)
                         _ -> Nothing
             let patternMatches = mapMaybe getAlts results
             let uniqBinders = DL.nub (map (getNonRecBinder . head . fst)

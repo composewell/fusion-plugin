@@ -160,6 +160,21 @@ import Fusion.Plugin.Inspect
 -- ghc-options: -fplugin-opt=Fusion.Plugin:inspect-unboxed
 -- @
 --
+-- By default a pattern match on one of the annotated function's own top-level
+-- parameters (the leading lambda binders of its RHS, including those of its
+-- direct @$w@ worker) is treated as an unavoidable /boundary/ unpack of a value
+-- handed in from outside the binding, not a fusion failure, and is excluded
+-- from the pattern-match report. Matches on values produced within the binding
+-- are still reported -- this includes the parameters of nested steppers and
+-- join points, of internal specializations (e.g. a SpecConstr @$s@ binding),
+-- and of any binding that takes part in a recursion cycle, all of which carry
+-- loop state rather than arguments. The @detect-boundary-matches@ option
+-- includes the boundary matches as well:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:detect-boundary-matches
+-- @
+--
 -- To dump the core after each core to core transformation, pass the
 -- following to your ghc-options:
 --
@@ -252,6 +267,7 @@ defaultOptions = Options
     , optionsCsvAppend = False
     , optionsForbidFused = False
     , optionsInspectUnboxed = False
+    , optionsDetectBoundaryMatches = False
     }
 
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
@@ -297,6 +313,12 @@ setInspectUnboxed val = do
     (args, opts) <- get
     put (args, opts { optionsInspectUnboxed = val })
 
+setDetectBoundaryMatches
+    :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setDetectBoundaryMatches val = do
+    (args, opts) <- get
+    put (args, opts { optionsDetectBoundaryMatches = val })
+
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
 setVerbosityLevel val = do
@@ -330,6 +352,7 @@ parseOptions args =
             "csv-append" -> setCsvAppend True
             "forbid-fused" -> setForbidFused True
             "inspect-unboxed" -> setInspectUnboxed True
+            "detect-boundary-matches" -> setDetectBoundaryMatches True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1
