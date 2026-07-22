@@ -186,6 +186,7 @@ data Options = Options
     , optionsForbidFused :: Bool
     , optionsInspectUnboxed :: Bool
     , optionsInspectBoundaries :: Bool
+    , optionsFuseIgnore :: Bool
     } deriving Show
 
 -- Checks whether a case alternative contains a type for which the given

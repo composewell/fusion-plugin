@@ -170,6 +170,18 @@ import Fusion.Plugin.Inspect
 -- ghc-options: -fplugin-opt=Fusion.Plugin:inspect-boundaries
 -- @
 --
+-- To neutralize the 'Fusion.Plugin.Types.Fuse' annotation, making it a no-op,
+-- pass the @fuse-ignore@ option:
+--
+-- @
+-- ghc-options: -fplugin-opt=Fusion.Plugin:fuse-ignore
+-- @
+--
+-- With this option the plugin does not force-inline anything, so the generated
+-- code is left unchanged (as if the plugin were not enabled). The fusion
+-- violation reports are still produced, which makes this useful for auditing
+-- fusion using standard GHC compilation.
+--
 -- To dump the core after each core to core transformation, pass the
 -- following to your ghc-options:
 --
@@ -263,6 +275,7 @@ defaultOptions = Options
     , optionsForbidFused = False
     , optionsInspectUnboxed = False
     , optionsInspectBoundaries = False
+    , optionsFuseIgnore = False
     }
 
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
@@ -314,6 +327,12 @@ setInspectBoundaries val = do
     (args, opts) <- get
     put (args, opts { optionsInspectBoundaries = val })
 
+setFuseIgnore
+    :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setFuseIgnore val = do
+    (args, opts) <- get
+    put (args, opts { optionsFuseIgnore = val })
+
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
 setVerbosityLevel val = do
@@ -348,6 +367,7 @@ parseOptions args =
             "forbid-fused" -> setForbidFused True
             "inspect-unboxed" -> setInspectUnboxed True
             "inspect-boundaries" -> setInspectBoundaries True
+            "fuse-ignore" -> setFuseIgnore True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1
@@ -546,25 +566,34 @@ install args todos
         -- expression directly.
         --
         -- TODO do not run simplify if we did not do anything in markInline phase.
+        --
+        -- When @fuse-ignore@ is set we neutralize the 'Fuse' annotation: the
+        -- force-inlining (markInline) and the follow-up gentle simplify passes
+        -- are skipped so codegen is left unchanged. Only the reporting pass
+        -- runs, so violations are still reported, but against GHC's ordinary
+        -- (un-force-inlined) baseline rather than the force-inlined one.
+        let markPasses
+                | optionsFuseIgnore options = []
+                | otherwise =
+                    [ fusionMarkInline 1 ReportSilent True
+                    , simplify
+                    , fusionMarkInline 2 ReportSilent True
+                    , simplify
+                    , fusionMarkInline 3 ReportSilent True
+                    , simplify
+                    -- This lets us know what was left unfused after all the
+                    -- inlining and case-of-case transformations.
+                    , let mesg = "Check unfused (post inlining)"
+                      in CoreDoPluginPass mesg
+                            (fusionReport mesg ReportSilent False options)
+                    ]
         return $
             insertDumpPasses
                 (optionsVerbosityLevel options /= ReportSilent)
                 (optionsDumpCore options) dumpPassesRef $
             insertAfterSimplPhase0
                 todos
-                [ fusionPluginMarker
-                , fusionMarkInline 1 ReportSilent True
-                , simplify
-                , fusionMarkInline 2 ReportSilent True
-                , simplify
-                , fusionMarkInline 3 ReportSilent True
-                , simplify
-                -- This lets us know what was left unfused after all the
-                -- inlining and case-of-case transformations.
-                , let mesg = "Check unfused (post inlining)"
-                  in CoreDoPluginPass mesg
-                        (fusionReport mesg ReportSilent False options)
-                ]
+                (fusionPluginMarker : markPasses)
                 (let mesg = "Check unfused (final)"
                      report =
                         fusionReport
