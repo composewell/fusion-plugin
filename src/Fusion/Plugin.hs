@@ -163,11 +163,11 @@ import Fusion.Plugin.Inspect
 -- By default the plugin excludes unavoidable function /boundary/ crossings
 -- from the reports, pattern matches on the function's arguments are not
 -- reported as violations, similarly construction of the return values of a
--- function are not reported. The @detect-boundary-matches@ option includes the
+-- function are not reported. The @inspect-boundaries@ option includes the
 -- boundary matches and constructions as well:
 --
 -- @
--- ghc-options: -fplugin-opt=Fusion.Plugin:detect-boundary-matches
+-- ghc-options: -fplugin-opt=Fusion.Plugin:inspect-boundaries
 -- @
 --
 -- To dump the core after each core to core transformation, pass the
@@ -262,7 +262,7 @@ defaultOptions = Options
     , optionsCsvAppend = False
     , optionsForbidFused = False
     , optionsInspectUnboxed = False
-    , optionsDetectBoundaryMatches = False
+    , optionsInspectBoundaries = False
     }
 
 setDumpCore :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
@@ -308,11 +308,11 @@ setInspectUnboxed val = do
     (args, opts) <- get
     put (args, opts { optionsInspectUnboxed = val })
 
-setDetectBoundaryMatches
+setInspectBoundaries
     :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
-setDetectBoundaryMatches val = do
+setInspectBoundaries val = do
     (args, opts) <- get
-    put (args, opts { optionsDetectBoundaryMatches = val })
+    put (args, opts { optionsInspectBoundaries = val })
 
 setVerbosityLevel :: Monad m
     => ReportMode -> StateT ([CommandLineOption], Options) m ()
@@ -347,7 +347,7 @@ parseOptions args =
             "csv-append" -> setCsvAppend True
             "forbid-fused" -> setForbidFused True
             "inspect-unboxed" -> setInspectUnboxed True
-            "detect-boundary-matches" -> setDetectBoundaryMatches True
+            "inspect-boundaries" -> setInspectBoundaries True
             "verbose=1" -> setVerbosityLevel ReportWarn
             "verbose=2" -> setVerbosityLevel ReportVerbose
             "verbose=3" -> setVerbosityLevel ReportVerbose1

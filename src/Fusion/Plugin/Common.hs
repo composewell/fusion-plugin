@@ -185,7 +185,7 @@ data Options = Options
     , optionsCsvAppend :: Bool
     , optionsForbidFused :: Bool
     , optionsInspectUnboxed :: Bool
-    , optionsDetectBoundaryMatches :: Bool
+    , optionsInspectBoundaries :: Bool
     } deriving Show
 
 -- Checks whether a case alternative contains a type for which the given

@@ -604,7 +604,7 @@ reportInspected
     -> INSPECT_PM_FM -> INSPECT_CONSTR_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM (Int, Bool)
 reportInspected
-        dflags reportMode forbidFused inspectUnboxed detectBoundary
+        dflags reportMode forbidFused inspectUnboxed inspectBoundaries
         anns pmAnns constrAnns allBinds (NonRec b _)
     | subsumedBySameName allBinds b = return (0, False)
     | otherwise = do
@@ -637,7 +637,7 @@ reportInspected
         let allHits = filter (inPosition . snd)
                     $ filter keep
                     $ filter (\(_, ctx) ->
-                                  detectBoundary || not (isBoundary ctx))
+                                  inspectBoundaries || not (isBoundary ctx))
                     -- Boundary detection runs on every closure member, worker
                     -- included -- not just the wrapper. A sum-typed argument is
                     -- not W/W-unpacked, so its boundary unpack lands in the
@@ -1090,7 +1090,7 @@ fusionReport mesg reportMode runInspect opts guts = do
               then reportInspected
                        dflags reportMode (optionsForbidFused opts)
                        (optionsInspectUnboxed opts)
-                       (optionsDetectBoundaryMatches opts)
+                       (optionsInspectBoundaries opts)
                        anns pmAnns constrAnns allBinds bind
               else return (0, False)
         n2 <- if runInspect
@@ -1124,9 +1124,9 @@ fusionReport mesg reportMode runInspect opts guts = do
             -- root, so eligibility reduces to the cycle check (see
             -- 'boundaryEligibleBinder'): 'b's own arguments are boundaries
             -- unless 'b' is a loop.
-            let detectBoundary = optionsDetectBoundaryMatches opts
+            let inspectBoundaries = optionsInspectBoundaries opts
                 results = filter (\(_, ctx) ->
-                                      detectBoundary || not (isBoundary ctx))
+                                      inspectBoundaries || not (isBoundary ctx))
                         $ keepBoxedOnly
                         $ containsAnns dflags (isJust . lookupUFM anns)
                               (boundaryEligibleBinder allBinds b b rhs) bind
