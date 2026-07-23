@@ -148,11 +148,11 @@ import Fusion.Plugin.Inspect
 -- This does not affect the @Permit...@ annotations:
 --
 -- @
--- ghc-options: -fplugin-opt=Fusion.Plugin:forbid-fused
+-- ghc-options: -fplugin-opt=Fusion.Plugin:inspect-fused
 -- @
 --
 -- By default unboxed types (e.g. @Int#@, unboxed tuples and sums) are
--- implicitly in the permitted list. When `inspect-fused` plugin option is
+-- implicitly in the permitted list. When `inspect-unboxed` plugin option is
 -- enabled they are no longer implicitly permitted, they will now have to be
 -- explictly mentioned in the permitted list to allow them.
 --
@@ -272,7 +272,7 @@ defaultOptions = Options
     , optionsVerbosityLevel = ReportSilent
     , optionsWError = False
     , optionsCsvAppend = False
-    , optionsForbidFused = False
+    , optionsInspectFused = False
     , optionsInspectUnboxed = False
     , optionsInspectBoundaries = False
     , optionsFuseIgnore = False
@@ -310,10 +310,10 @@ setCsvAppend val = do
     (args, opts) <- get
     put (args, opts { optionsCsvAppend = val })
 
-setForbidFused :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
-setForbidFused val = do
+setInspectFused :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
+setInspectFused val = do
     (args, opts) <- get
-    put (args, opts { optionsForbidFused = val })
+    put (args, opts { optionsInspectFused = val })
 
 setInspectUnboxed
     :: Monad m => Bool -> StateT ([CommandLineOption], Options) m ()
@@ -364,7 +364,7 @@ parseOptions args =
             "dump-core-if-violated" -> setDumpCoreIfViolated True
             "werror" -> setWError True
             "csv-append" -> setCsvAppend True
-            "forbid-fused" -> setForbidFused True
+            "inspect-fused" -> setInspectFused True
             "inspect-unboxed" -> setInspectUnboxed True
             "inspect-boundaries" -> setInspectBoundaries True
             "fuse-ignore" -> setFuseIgnore True

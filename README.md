@@ -147,7 +147,7 @@ The whole system reduces to four simple rules:
   (forbidden).
 * A type explicitly listed in a `Permit...` annotation is **always allowed**
   (permitted), never reported.
-* The `forbid-fused` plugin option **adds all `Fuse` annotated types to the
+* The `inspect-fused` plugin option **adds all `Fuse` annotated types to the
   forbidden set**.
 * By default unboxed types are implicitly in the permitted list. The
   `inspect-unboxed` plugin option means **unboxed types are no longer
@@ -164,12 +164,12 @@ annotation of each type to the binding.
 function2 :: ...
 ```
 
-Additionally pass the `forbid-fused` plugin option to forbid all `Fuse`
+Additionally pass the `inspect-fused` plugin option to forbid all `Fuse`
 annotated types too, using them as a baseline; the types named in the
 annotation are then forbidden on top of them. With this option
 `ForbidConstructions []` forbids exactly the `Fuse` annotated types.
 ```
-ghc-options: -fplugin-opt=Fusion.Plugin:forbid-fused
+ghc-options: -fplugin-opt=Fusion.Plugin:inspect-fused
 ```
 
 Report the listed types only where they are constructed:

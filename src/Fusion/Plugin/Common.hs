@@ -183,7 +183,7 @@ data Options = Options
     , optionsVerbosityLevel :: ReportMode
     , optionsWError :: Bool
     , optionsCsvAppend :: Bool
-    , optionsForbidFused :: Bool
+    , optionsInspectFused :: Bool
     , optionsInspectUnboxed :: Bool
     , optionsInspectBoundaries :: Bool
     , optionsFuseIgnore :: Bool

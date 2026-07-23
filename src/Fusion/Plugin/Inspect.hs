@@ -421,8 +421,8 @@ keepBoxedOnly
 keepBoxedOnly = filter (isBoxedHit . snd)
 
 forbidding :: Bool -> UNIQ_FM -> [Name] -> Name -> Bool
-forbidding forbidFused anns names n =
-    n `elem` names || (forbidFused && isJust (lookupUFM anns n))
+forbidding inspectFused anns names n =
+    n `elem` names || (inspectFused && isJust (lookupUFM anns n))
 
 -- | Show a scrutinizing hit for the detailed report. A 'Left' is a scrutiny
 -- that matched a data constructor (delegated to 'showDetailsCaseMatch'); a
@@ -481,12 +481,12 @@ data NormInspect = NormInspect
 -- act on the scrutinizing (pattern-match) position.
 normPatternMatches
     :: Bool -> UNIQ_FM -> InspectPatternMatches -> CoreM NormInspect
-normPatternMatches forbidFused anns d = do
+normPatternMatches inspectFused anns d = do
     (interesting, excl, explicit, permit, banner) <- case d of
         ForbidPatternMatches thNames -> do
             names <- resolveTHNames thNames
             return
-                ( forbidding forbidFused anns names
+                ( forbidding inspectFused anns names
                 , []
                 , names
                 , Nothing
@@ -515,12 +515,12 @@ normPatternMatches forbidFused anns d = do
 -- on the constructing (allocating) position.
 normConstructions
     :: Bool -> UNIQ_FM -> InspectConstructions -> CoreM NormInspect
-normConstructions forbidFused anns d = do
+normConstructions inspectFused anns d = do
     (interesting, excl, explicit, permit, banner) <- case d of
         ForbidConstructions thNames -> do
             names <- resolveTHNames thNames
             return
-                ( forbidding forbidFused anns names
+                ( forbidding inspectFused anns names
                 , []
                 , names
                 , Nothing
@@ -604,16 +604,16 @@ reportInspected
     -> INSPECT_PM_FM -> INSPECT_CONSTR_FM
     -> [(CoreBndr, CoreExpr)] -> CoreBind -> CoreM (Int, Bool)
 reportInspected
-        dflags reportMode forbidFused inspectUnboxed inspectBoundaries
+        dflags reportMode inspectFused inspectUnboxed inspectBoundaries
         anns pmAnns constrAnns allBinds (NonRec b _)
     | subsumedBySameName allBinds b = return (0, False)
     | otherwise = do
         n1 <- maybe (return 0)
-                (\d -> normPatternMatches forbidFused anns d >>= go)
+                (\d -> normPatternMatches inspectFused anns d >>= go)
                 (lookupBinderAnn b pmAnns)
         (n2, advised) <- maybe (return (0, False))
                 (\d -> do
-                    ni <- normConstructions forbidFused anns d
+                    ni <- normConstructions inspectFused anns d
                     r <- go ni
                     -- Advisory only: references to fusible values that fusion
                     -- would try to inline away. Not counted as a violation, but
@@ -1088,7 +1088,7 @@ fusionReport mesg reportMode runInspect opts guts = do
             dumpAnns  = iaDumps iAnns
         (n1, advised) <- if runInspect
               then reportInspected
-                       dflags reportMode (optionsForbidFused opts)
+                       dflags reportMode (optionsInspectFused opts)
                        (optionsInspectUnboxed opts)
                        (optionsInspectBoundaries opts)
                        anns pmAnns constrAnns allBinds bind
